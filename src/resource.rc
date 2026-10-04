@@ -2,6 +2,8 @@
 #include "resource.h"
 #include "version.h"
 
+IDI_APP ICON "src/diskwipe.ico"
+
 1 24 "src/diskwipe.manifest"
 
 IDD_CONFIRM DIALOGEX 0, 0, 260, 132

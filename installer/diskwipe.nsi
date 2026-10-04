@@ -1,5 +1,5 @@
 ; diskwipe Installer – wird von "make dist" gebaut.
-; Erwartet: -DVERSION=x.y.z -DEXE=<Pfad zu diskwipe.exe> -DOUTFILE=<Pfad zum Setup>
+; Erwartet: -DVERSION=x.y.z -DEXE=<Pfad zu diskwipe.exe> -DOUTFILE=<Pfad zum Setup> -DICON=<Pfad zu diskwipe.ico>
 Unicode true
 
 !ifndef VERSION
@@ -10,6 +10,10 @@ Unicode true
 !endif
 !ifndef OUTFILE
   !error "OUTFILE fehlt (-DOUTFILE=...)"
+!endif
+
+!ifndef ICON
+  !error "ICON fehlt (-DICON=...)"
 !endif
 
 !define APP "diskwipe"
@@ -33,7 +37,10 @@ VIAddVersionKey /LANG=1031 "CompanyName" "${PUBLISHER}"
 VIAddVersionKey /LANG=1031 "FileDescription" "${APP} Installer"
 VIAddVersionKey /LANG=1031 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1031 "ProductVersion" "${VERSION}"
+VIAddVersionKey /LANG=1031 "LegalCopyright" "${PUBLISHER}"
 
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 !define MUI_ABORTWARNING
 !define MUI_FINISHPAGE_RUN "$INSTDIR\diskwipe.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "diskwipe jetzt starten"
@@ -68,8 +75,8 @@ Section "diskwipe (erforderlich)" SecMain
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\${APP}"
-  CreateShortcut "$SMPROGRAMS\${APP}\diskwipe.lnk" "$INSTDIR\diskwipe.exe"
-  CreateShortcut "$SMPROGRAMS\${APP}\diskwipe deinstallieren.lnk" "$INSTDIR\uninstall.exe"
+  CreateShortcut "$SMPROGRAMS\${APP}\diskwipe.lnk" "$INSTDIR\diskwipe.exe" "" "$INSTDIR\diskwipe.exe" 0
+  CreateShortcut "$SMPROGRAMS\${APP}\diskwipe deinstallieren.lnk" "$INSTDIR\uninstall.exe" "" "$INSTDIR\diskwipe.exe" 0
 
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP}"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
@@ -86,7 +93,7 @@ Section "diskwipe (erforderlich)" SecMain
 SectionEnd
 
 Section /o "Desktop-Verknüpfung" SecDesktop
-  CreateShortcut "$DESKTOP\diskwipe.lnk" "$INSTDIR\diskwipe.exe"
+  CreateShortcut "$DESKTOP\diskwipe.lnk" "$INSTDIR\diskwipe.exe" "" "$INSTDIR\diskwipe.exe" 0
 SectionEnd
 
 Section "Uninstall"

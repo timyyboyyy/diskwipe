@@ -51,7 +51,7 @@ $(BUILD)/diskwipe_tests.exe: $(CORE_SRC) $(WIN_LIB_SRC) $(TEST_SRC) $(WIN_TEST_S
 test-win: $(BUILD)/diskwipe_tests.exe
 	./$(BUILD)/diskwipe_tests.exe
 
-$(BUILD)/resource.o: src/resource.rc src/resource.h src/diskwipe.manifest $(BUILD)/version.h
+$(BUILD)/resource.o: src/resource.rc src/resource.h src/diskwipe.manifest src/diskwipe.ico $(BUILD)/version.h
 	$(WINDRES) -I src -I $(BUILD) -o $@ src/resource.rc
 
 $(BUILD)/diskwipe.exe: $(CORE_SRC) $(WIN_LIB_SRC) src/gui_win.cpp $(BUILD)/resource.o $(BUILD)/version.h $(HEADERS)
@@ -63,7 +63,7 @@ windows: $(BUILD)/diskwipe.exe
 dist: $(BUILD)/diskwipe.exe
 	mkdir -p $(DIST)
 	cp $(BUILD)/diskwipe.exe $(DIST)/diskwipe-$(VERSION)-portable.exe
-	$(MAKENSIS) -V2 -DVERSION=$(VERSION) -DEXE=$(abspath $(BUILD)/diskwipe.exe) \
+	$(MAKENSIS) -V2 -DVERSION=$(VERSION) -DEXE=$(abspath $(BUILD)/diskwipe.exe) -DICON=$(abspath src/diskwipe.ico) \
 	  -DOUTFILE=$(abspath $(DIST)/diskwipe-$(VERSION)-setup.exe) installer/diskwipe.nsi
 	cd $(DIST) && sha256sum diskwipe-$(VERSION)-setup.exe diskwipe-$(VERSION)-portable.exe > SHA256SUMS.txt
 

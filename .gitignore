@@ -19,3 +19,6 @@ photorec.log
 *.swp
 .DS_Store
 Thumbs.db
+
+# Icon-Vorschau
+tools/icon-*preview.png

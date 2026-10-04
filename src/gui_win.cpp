@@ -191,11 +191,17 @@ bool confirmTextMatches(HWND dlg) {
     return std::wcscmp(buf, kConfirmWord) == 0;
 }
 
+HICON loadAppIcon(int cx, int cy) {
+    return static_cast<HICON>(LoadImageW(g.inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, cx, cy, 0));
+}
+
 INT_PTR CALLBACK confirmProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_INITDIALOG: {
         const auto* driveText = reinterpret_cast<const std::string*>(lp);
         SetWindowTextW(dlg, L"Löschen bestätigen");
+        SendMessageW(dlg, WM_SETICON, ICON_SMALL,
+                     reinterpret_cast<LPARAM>(loadAppIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON))));
         const std::wstring text = L"ALLE Daten auf diesem Laufwerk werden unwiederbringlich überschrieben:\r\n\r\n" +
                                   toWide(*driveText) + L"\r\n\r\nZur Bestätigung LÖSCHEN eintippen:";
         SetDlgItemTextW(dlg, IDC_CONFIRM_TEXT, text.c_str());
@@ -558,7 +564,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = loadAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    wc.hIconSm = loadAppIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     wc.lpszClassName = L"DiskwipeWindow";
     RegisterClassExW(&wc);
