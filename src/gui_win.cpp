@@ -1,6 +1,7 @@
 // Minimalistische Win32-Oberfläche für diskwipe.
 #include <windows.h>
 #include <commctrl.h>
+#include <dbt.h>
 
 #include <atomic>
 #include <chrono>
@@ -30,7 +31,11 @@ enum : int {
 };
 constexpr UINT WM_APP_PROGRESS = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
+constexpr UINT_PTR IDT_REFRESH = 1;
+constexpr UINT kRefreshDebounceMs = 500;
 constexpr int kMaxRandomPasses = 10;
+// GUID_DEVINTERFACE_DISK
+const GUID kDiskInterfaceGuid = {0x53f56307, 0xb6bf, 0x11d0, {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
 const wchar_t* const kConfirmWord = L"LÖSCHEN";
 
 struct App {
@@ -47,6 +52,8 @@ struct App {
     bool running = false;
     bool wipeMode = false;
     bool closing = false;
+    bool refreshPending = false;  // Geräteänderung während eines Laufs, wird danach nachgeholt
+    HDEVNOTIFY devNotify = nullptr;
     std::mutex progressMutex;
     Progress lastProgress;
     Clock::time_point started;
@@ -113,19 +120,59 @@ void setRunning(bool running) {
     EnableWindow(g.cancelBtn, running);
 }
 
-void refreshDrives() {
+bool sameDrive(const DriveInfo& a, const DriveInfo& b) {
+    return a.number == b.number && a.serial == b.serial && a.size == b.size;
+}
+
+int findDrive(const std::vector<DriveInfo>& list, const DriveInfo& d) {
+    for (size_t i = 0; i < list.size(); ++i)
+        if (sameDrive(list[i], d)) return static_cast<int>(i);
+    return -1;
+}
+
+// automatic = durch Geräteereignis ausgelöst: Hinzu-/Entfernt-Log statt "N Laufwerk(e) gefunden."
+void refreshDrives(bool automatic = false) {
     const bool includeInternal = SendMessageW(g.internal, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    g.drives.clear();
-    SendMessageW(g.drive, CB_RESETCONTENT, 0, 0);
+
+    // Auswahl merken (Nummer + Seriennummer + Größe)
+    DriveInfo selected;
+    bool haveSelected = false;
+    const LRESULT oldSel = SendMessageW(g.drive, CB_GETCURSEL, 0, 0);
+    if (oldSel != CB_ERR && static_cast<size_t>(oldSel) < g.drives.size()) {
+        selected = g.drives[static_cast<size_t>(oldSel)];
+        haveSelected = true;
+    }
+
+    std::vector<DriveInfo> fresh;
     for (const DriveInfo& d : listDrives())
-        if (isSelectable(d, includeInternal)) g.drives.push_back(d);
-    g.driveTexts = describeDrives(g.drives);
+        if (isSelectable(d, includeInternal)) fresh.push_back(d);
+    const std::vector<std::string> freshTexts = describeDrives(fresh);
+
+    if (automatic) {
+        for (size_t i = 0; i < fresh.size(); ++i)
+            if (findDrive(g.drives, fresh[i]) < 0) appendLog(L"Laufwerk angeschlossen: " + toWide(freshTexts[i]));
+        for (size_t i = 0; i < g.drives.size(); ++i)
+            if (findDrive(fresh, g.drives[i]) < 0) appendLog(L"Laufwerk entfernt: " + toWide(g.driveTexts[i]));
+        if (freshTexts == g.driveTexts) {  // unverändert: Combobox nicht anfassen (Dropdown bleibt offen)
+            g.drives = fresh;
+            setRunning(false);
+            return;
+        }
+    }
+
+    g.drives = fresh;
+    g.driveTexts = freshTexts;
+    SendMessageW(g.drive, CB_RESETCONTENT, 0, 0);
     for (const std::string& t : g.driveTexts)
         SendMessageW(g.drive, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(toWide(t).c_str()));
-    if (!g.drives.empty()) SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
+    if (!g.drives.empty()) {
+        const int keep = haveSelected ? findDrive(g.drives, selected) : -1;
+        SendMessageW(g.drive, CB_SETCURSEL, keep >= 0 ? keep : 0, 0);
+    }
     setRunning(false);
-    appendLog(g.drives.empty() ? L"Kein passendes Laufwerk gefunden."
-                               : std::to_wstring(g.drives.size()) + L" Laufwerk(e) gefunden.");
+    if (!automatic)
+        appendLog(g.drives.empty() ? L"Kein passendes Laufwerk gefunden."
+                                   : std::to_wstring(g.drives.size()) + L" Laufwerk(e) gefunden.");
 }
 
 bool confirmTextMatches(HWND dlg) {
@@ -307,7 +354,8 @@ void onDone(Result* raw) {
         DestroyWindow(g.wnd);
         return;
     }
-    if (g.wipeMode) refreshDrives();
+    if (g.refreshPending || g.wipeMode) refreshDrives(g.refreshPending);
+    g.refreshPending = false;
 }
 
 HWND makeChild(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, DWORD exStyle = 0) {
@@ -358,7 +406,26 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         createControls();
         appendLog(L"diskwipe " DW_VERSION_WSTR L" bereit.");
         refreshDrives();
+        {
+            DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
+            filter.dbcc_size = sizeof(filter);
+            filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+            filter.dbcc_classguid = kDiskInterfaceGuid;
+            g.devNotify = RegisterDeviceNotificationW(wnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        }
         return 0;
+    case WM_DEVICECHANGE:
+        if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE || wp == DBT_DEVNODES_CHANGED)
+            SetTimer(wnd, IDT_REFRESH, kRefreshDebounceMs, nullptr);  // Neustart = Entprellung
+        return TRUE;
+    case WM_TIMER:
+        if (wp == IDT_REFRESH) {
+            KillTimer(wnd, IDT_REFRESH);
+            if (g.running) g.refreshPending = true;
+            else refreshDrives(true);
+            return 0;
+        }
+        break;
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_REFRESH:
@@ -421,6 +488,9 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         DestroyWindow(wnd);
         return 0;
     case WM_DESTROY:
+        KillTimer(wnd, IDT_REFRESH);
+        if (g.devNotify) UnregisterDeviceNotification(g.devNotify);
+        g.devNotify = nullptr;
         PostQuitMessage(0);
         return 0;
     }
