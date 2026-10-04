@@ -1,4 +1,5 @@
 #include "drive.h"
+#include "pattern.h"
 #include "test.h"
 
 using namespace dw;
@@ -53,4 +54,10 @@ TEST(describe_drive_format) {
     CHECK_EQ(describeDrive(d), std::string("Disk 2 – Unbekannt – 29,8 GB – Wechseldatenträger"));
     d.removable = false;
     CHECK_EQ(describeDrive(d), std::string("Disk 2 – Unbekannt – 29,8 GB – Intern"));
+}
+
+TEST(tiny_drive_is_not_selectable) {
+    CHECK(!isSelectable(drive(true, true, false, 1024), false));
+    CHECK(!isSelectable(drive(true, true, false, 1024), true));
+    CHECK(isSelectable(drive(true, false, false, kBlockSize), false));
 }

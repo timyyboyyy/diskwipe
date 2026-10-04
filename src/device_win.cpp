@@ -4,11 +4,26 @@
 
 #include <algorithm>
 
+#include "enumerate_win.h"
 #include "util_win.h"
 
 namespace dw {
 
-std::unique_ptr<WinPhysicalDevice> WinPhysicalDevice::open(int diskNumber, std::string& err) {
+std::unique_ptr<WinPhysicalDevice> WinPhysicalDevice::open(const DriveInfo& expected, std::string& err) {
+    const int diskNumber = expected.number;
+
+    // 0. Laufwerk gegenüber der Auswahl revalidieren (Nummern ändern sich beim Umstecken).
+    bool unchanged = false;
+    for (const DriveInfo& cur : listDrives()) {
+        if (cur.number != expected.number) continue;
+        unchanged = !cur.system && cur.model == expected.model && cur.size == expected.size && cur.usb == expected.usb &&
+                    cur.removable == expected.removable;
+    }
+    if (!unchanged) {
+        err = "Laufwerk hat sich geändert – bitte Liste aktualisieren";
+        return nullptr;
+    }
+
     std::unique_ptr<WinPhysicalDevice> d(new WinPhysicalDevice());
     DWORD ret = 0;
 
@@ -19,13 +34,19 @@ std::unique_ptr<WinPhysicalDevice> WinPhysicalDevice::open(int diskNumber, std::
         do {
             std::wstring path(name);
             if (!path.empty() && path.back() == L'\\') path.pop_back();
+            // Erst nur abfragen (Zugriffsrecht 0): liegt das Volume auf dem Ziellaufwerk?
+            HANDLE probe = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+            if (probe == INVALID_HANDLE_VALUE) continue;  // kein Datenträger-Volume
+            const auto disks = volumeDiskNumbers(probe);
+            CloseHandle(probe);
+            if (std::find(disks.begin(), disks.end(), static_cast<DWORD>(diskNumber)) == disks.end()) continue;
+
             HANDLE v = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
                                    OPEN_EXISTING, 0, nullptr);
-            if (v == INVALID_HANDLE_VALUE) continue;
-            const auto disks = volumeDiskNumbers(v);
-            if (std::find(disks.begin(), disks.end(), static_cast<DWORD>(diskNumber)) == disks.end()) {
-                CloseHandle(v);
-                continue;
+            if (v == INVALID_HANDLE_VALUE) {
+                err = "Volume auf dem Laufwerk kann nicht geöffnet werden: " + winErrorText(GetLastError());
+                FindVolumeClose(find);
+                return nullptr;
             }
             bool locked = false;
             DWORD lockError = 0;

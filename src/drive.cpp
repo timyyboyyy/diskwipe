@@ -2,10 +2,12 @@
 
 #include <cstdio>
 
+#include "pattern.h"
+
 namespace dw {
 
 bool isSelectable(const DriveInfo& d, bool includeInternal) {
-    if (d.system || d.size == 0) return false;
+    if (d.system || d.size < kBlockSize) return false;
     return d.usb || d.removable || includeInternal;
 }
 

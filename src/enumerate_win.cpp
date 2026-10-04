@@ -36,7 +36,22 @@ bool systemDiskNumbers(std::vector<DWORD>& out) {
     if (v == INVALID_HANDLE_VALUE) return false;
     out = volumeDiskNumbers(v);
     CloseHandle(v);
-    return !out.empty();
+    if (out.empty()) return false;
+
+    // Firmware-Systempartition (ESP) kann auf einem anderen Laufwerk liegen. Fehler hier ändern nichts am Ergebnis.
+    wchar_t part[MAX_PATH];
+    DWORD partSize = sizeof(part);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\Setup", L"SystemPartition", RRF_RT_REG_SZ, nullptr, part, &partSize) ==
+        ERROR_SUCCESS) {
+        const std::wstring espPath = std::wstring(L"\\\\?\\GLOBALROOT") + part;
+        HANDLE e = CreateFileW(espPath.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (e != INVALID_HANDLE_VALUE) {
+            for (DWORD n : volumeDiskNumbers(e))
+                if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+            CloseHandle(e);
+        }
+    }
+    return true;
 }
 
 }  // namespace

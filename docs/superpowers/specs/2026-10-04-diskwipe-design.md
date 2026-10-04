@@ -36,7 +36,7 @@ Standard: 3 Zufallsdurchgänge + 1 Nulldurchgang (Durchgänge in der GUI einstel
 - Programm startet nur mit Adminrechten (Manifest; zusätzlich Laufzeitprüfung).
 - Standardliste zeigt nur Laufwerke mit Bustyp USB oder Wechselmedium.
 - Die Systemplatte (Laufwerk, das das Windows-Volume enthält) wird nie angezeigt. Lässt sie sich nicht ermitteln, gilt jedes nicht-USB-/nicht-Wechsel-Laufwerk als Systemplatte.
-- Laufwerke mit Größe 0 (z.B. Kartenleser ohne Karte) werden nicht angezeigt.
+- Laufwerke kleiner als 1 MiB (z.B. Kartenleser ohne Karte, Firmware-Speicher von USB-Peripherie) werden nicht angezeigt.
 - Andere interne Platten nur über Checkbox "Interne Laufwerke anzeigen" mit Warndialog.
 - Vor Start: Bestätigungsdialog mit Modell, Größe, Laufwerksnummer; Nutzer muss `LÖSCHEN` eintippen.
 

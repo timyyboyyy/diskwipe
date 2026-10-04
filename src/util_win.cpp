@@ -35,8 +35,14 @@ std::vector<DWORD> volumeDiskNumbers(HANDLE volume) {
     DWORD returned = 0;
     std::vector<DWORD> disks;
     if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0, buf.data(),
-                         static_cast<DWORD>(buf.size()), &returned, nullptr))
-        return disks;
+                         static_cast<DWORD>(buf.size()), &returned, nullptr)) {
+        if (GetLastError() != ERROR_MORE_DATA) return disks;
+        const DWORD count = reinterpret_cast<const VOLUME_DISK_EXTENTS*>(buf.data())->NumberOfDiskExtents;
+        buf.assign(sizeof(VOLUME_DISK_EXTENTS) + count * sizeof(DISK_EXTENT), 0);
+        if (!DeviceIoControl(volume, IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS, nullptr, 0, buf.data(),
+                             static_cast<DWORD>(buf.size()), &returned, nullptr))
+            return disks;
+    }
     const auto* ext = reinterpret_cast<const VOLUME_DISK_EXTENTS*>(buf.data());
     for (DWORD i = 0; i < ext->NumberOfDiskExtents; ++i) disks.push_back(ext->Extents[i].DiskNumber);
     return disks;

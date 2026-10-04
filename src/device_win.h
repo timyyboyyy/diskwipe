@@ -6,14 +6,16 @@
 #include <vector>
 
 #include "device.h"
+#include "drive.h"
 
 namespace dw {
 
 // Physisches Laufwerk mit Rohzugriff. Alle Volumes darauf bleiben gesperrt und
 // ausgehängt, solange das Objekt lebt. Benötigt Adminrechte.
+// Prüft vor dem Sperren, dass das Laufwerk noch dem ausgewählten (expected) entspricht.
 class WinPhysicalDevice : public BlockDevice {
 public:
-    static std::unique_ptr<WinPhysicalDevice> open(int diskNumber, std::string& err);
+    static std::unique_ptr<WinPhysicalDevice> open(const DriveInfo& expected, std::string& err);
     ~WinPhysicalDevice() override;
     WinPhysicalDevice(const WinPhysicalDevice&) = delete;
     WinPhysicalDevice& operator=(const WinPhysicalDevice&) = delete;
