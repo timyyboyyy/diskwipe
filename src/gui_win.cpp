@@ -52,6 +52,7 @@ struct App {
     bool running = false;
     bool wipeMode = false;
     bool closing = false;
+    bool modal = false;           // modaler Dialog offen: keine Listenänderung
     bool refreshPending = false;  // Geräteänderung während eines Laufs, wird danach nachgeholt
     HDEVNOTIFY devNotify = nullptr;
     std::mutex progressMutex;
@@ -153,7 +154,9 @@ void refreshDrives(bool automatic = false) {
             if (findDrive(g.drives, fresh[i]) < 0) appendLog(L"Laufwerk angeschlossen: " + toWide(freshTexts[i]));
         for (size_t i = 0; i < g.drives.size(); ++i)
             if (findDrive(fresh, g.drives[i]) < 0) appendLog(L"Laufwerk entfernt: " + toWide(g.driveTexts[i]));
-        if (freshTexts == g.driveTexts) {  // unverändert: Combobox nicht anfassen (Dropdown bleibt offen)
+        bool identical = freshTexts == g.driveTexts && fresh.size() == g.drives.size();
+        for (size_t i = 0; identical && i < fresh.size(); ++i) identical = sameDrive(fresh[i], g.drives[i]);
+        if (identical) {  // unverändert: Combobox nicht anfassen (Dropdown bleibt offen)
             g.drives = fresh;
             setRunning(false);
             return;
@@ -173,6 +176,13 @@ void refreshDrives(bool automatic = false) {
     if (!automatic)
         appendLog(g.drives.empty() ? L"Kein passendes Laufwerk gefunden."
                                    : std::to_wstring(g.drives.size()) + L" Laufwerk(e) gefunden.");
+}
+
+// Nachholen einer während Lauf/Dialog zurückgestellten automatischen Aktualisierung.
+void flushPendingRefresh() {
+    if (!g.refreshPending || g.running || g.modal || g.closing) return;
+    g.refreshPending = false;
+    refreshDrives(true);
 }
 
 bool confirmTextMatches(HWND dlg) {
@@ -244,10 +254,16 @@ void startOperation(bool wipe) {
     if (randomPasses < 0) randomPasses = 0;
     if (randomPasses > kMaxRandomPasses) randomPasses = kMaxRandomPasses;
 
-    if (wipe && DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
-                                reinterpret_cast<LPARAM>(&driveText)) != IDOK) {
-        appendLog(L"Löschen nicht bestätigt.");
-        return;
+    if (wipe) {
+        g.modal = true;
+        const INT_PTR confirmed = DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
+                                                  reinterpret_cast<LPARAM>(&driveText));
+        g.modal = false;
+        if (confirmed != IDOK) {
+            appendLog(L"Löschen nicht bestätigt.");
+            flushPendingRefresh();
+            return;
+        }
     }
 
     if (g.worker.joinable()) g.worker.join();
@@ -318,12 +334,15 @@ void onDone(Result* raw) {
         if (g.wipeMode) text += L" (" + std::to_wstring(r->passesCompleted) + L" Durchgänge geschrieben und verifiziert)";
         setResult(text, RGB(0, 128, 0));
         appendLog(text);
-        if (g.wipeMode && !g.closing)
+        if (g.wipeMode && !g.closing) {
+            g.modal = true;
             MessageBoxW(g.wnd,
                         L"Der Datenträger wurde vollständig überschrieben und verifiziert.\n\n"
                         L"Hinweis: Reservebereiche des Flash-Controllers sind per Software nicht erreichbar. "
                         L"Für maximale Sicherheit den Stick zusätzlich physisch zerstören.",
                         L"diskwipe", MB_ICONINFORMATION);
+            g.modal = false;
+        }
         break;
     }
     case Status::Cancelled: {
@@ -354,8 +373,13 @@ void onDone(Result* raw) {
         DestroyWindow(g.wnd);
         return;
     }
-    if (g.refreshPending || g.wipeMode) refreshDrives(g.refreshPending);
-    g.refreshPending = false;
+    if (g.wipeMode && !g.modal) {
+        const bool automatic = g.refreshPending;
+        g.refreshPending = false;
+        refreshDrives(automatic);
+    } else {
+        flushPendingRefresh();
+    }
 }
 
 HWND makeChild(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, DWORD exStyle = 0) {
@@ -412,6 +436,8 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
             filter.dbcc_classguid = kDiskInterfaceGuid;
             g.devNotify = RegisterDeviceNotificationW(wnd, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+            if (!g.devNotify)
+                appendLog(L"Automatische Laufwerkserkennung nicht verfügbar: " + toWide(winErrorText(GetLastError())));
         }
         return 0;
     case WM_DEVICECHANGE:
@@ -421,7 +447,7 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == IDT_REFRESH) {
             KillTimer(wnd, IDT_REFRESH);
-            if (g.running) g.refreshPending = true;
+            if (g.running || g.modal) g.refreshPending = true;
             else refreshDrives(true);
             return 0;
         }
@@ -433,12 +459,16 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case IDC_INTERNAL:
             if (HIWORD(wp) == BN_CLICKED) {
-                if (SendMessageW(g.internal, BM_GETCHECK, 0, 0) == BST_CHECKED &&
-                    MessageBoxW(wnd,
-                                L"Interne Laufwerke anzeigen?\n\nDas Löschen einer internen Festplatte vernichtet alle "
-                                L"Daten darauf. Die Systemplatte wird nie angezeigt.",
-                                L"Warnung", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES)
-                    SendMessageW(g.internal, BM_SETCHECK, BST_UNCHECKED, 0);
+                if (SendMessageW(g.internal, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                    g.modal = true;
+                    const int answer = MessageBoxW(wnd,
+                                                   L"Interne Laufwerke anzeigen?\n\nDas Löschen einer internen Festplatte "
+                                                   L"vernichtet alle Daten darauf. Die Systemplatte wird nie angezeigt.",
+                                                   L"Warnung", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+                    g.modal = false;
+                    if (answer != IDYES) SendMessageW(g.internal, BM_SETCHECK, BST_UNCHECKED, 0);
+                }
+                g.refreshPending = false;  // die manuelle Aktualisierung unten deckt es ab
                 refreshDrives();
             }
             return 0;
@@ -471,10 +501,13 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_CLOSE:
         if (g.running) {
-            if (MessageBoxW(wnd,
-                            L"Es läuft noch ein Vorgang. Abbrechen und beenden?\n"
-                            L"Der Datenträger ist dann unvollständig gelöscht.",
-                            L"diskwipe", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
+            g.modal = true;
+            const int answer = MessageBoxW(wnd,
+                                           L"Es läuft noch ein Vorgang. Abbrechen und beenden?\n"
+                                           L"Der Datenträger ist dann unvollständig gelöscht.",
+                                           L"diskwipe", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            g.modal = false;
+            if (answer == IDYES) {
                 if (!g.running) {  // Vorgang endete, während die Abfrage offen war
                     DestroyWindow(wnd);
                     return 0;
@@ -482,6 +515,8 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
                 g.closing = true;
                 g.cancel = true;
                 appendLog(L"Beenden: Abbruch angefordert …");
+            } else {
+                flushPendingRefresh();
             }
             return 0;
         }
