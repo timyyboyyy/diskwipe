@@ -192,7 +192,7 @@ bool confirmTextMatches(HWND dlg) {
 }
 
 HICON loadAppIcon(int cx, int cy) {
-    return static_cast<HICON>(LoadImageW(g.inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, cx, cy, 0));
+    return static_cast<HICON>(LoadImageW(g.inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, cx, cy, LR_SHARED));
 }
 
 INT_PTR CALLBACK confirmProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
