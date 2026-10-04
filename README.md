@@ -41,3 +41,7 @@ make dist       # dist/: Installer, portable Exe, SHA256SUMS.txt
 Release: Version in `VERSION` erhöhen, committen, `git tag v<version> && git push --tags` – GitHub Actions baut, testet (Linux + Windows) und veröffentlicht das Release.
 
 Manuelle Testanleitung: [`docs/manual-test.md`](docs/manual-test.md) · Design: [`docs/superpowers/specs/2026-10-04-diskwipe-design.md`](docs/superpowers/specs/2026-10-04-diskwipe-design.md)
+
+## Lizenz
+
+[MIT](LICENSE) – Nutzung auf eigene Gefahr, ohne Gewährleistung.
