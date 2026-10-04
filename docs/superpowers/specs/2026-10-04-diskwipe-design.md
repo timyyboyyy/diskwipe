@@ -35,7 +35,8 @@ Standard: 3 Zufallsdurchgänge + 1 Nulldurchgang (Durchgänge in der GUI einstel
 
 - Programm startet nur mit Adminrechten (Manifest; zusätzlich Laufzeitprüfung).
 - Standardliste zeigt nur Laufwerke mit Bustyp USB oder Wechselmedium.
-- Die Systemplatte (Laufwerk, das das Windows-Volume enthält) wird nie angezeigt.
+- Die Systemplatte (Laufwerk, das das Windows-Volume enthält) wird nie angezeigt. Lässt sie sich nicht ermitteln, gilt jedes nicht-USB-/nicht-Wechsel-Laufwerk als Systemplatte.
+- Laufwerke mit Größe 0 (z.B. Kartenleser ohne Karte) werden nicht angezeigt.
 - Andere interne Platten nur über Checkbox "Interne Laufwerke anzeigen" mit Warndialog.
 - Vor Start: Bestätigungsdialog mit Modell, Größe, Laufwerksnummer; Nutzer muss `LÖSCHEN` eintippen.
 
@@ -49,6 +50,8 @@ Standard: 3 Zufallsdurchgänge + 1 Nulldurchgang (Durchgänge in der GUI einstel
 | `src/device_win.cpp` | `WinPhysicalDevice`: Volumes des Laufwerks sperren + aushängen (`FSCTL_LOCK_VOLUME`, `FSCTL_DISMOUNT_VOLUME`), `\\.\PhysicalDriveN` mit `FILE_FLAG_NO_BUFFERING \| FILE_FLAG_WRITE_THROUGH` öffnen, Größe via `IOCTL_DISK_GET_LENGTH_INFO`, Sektorgröße via `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, sektorausgerichtete Puffer (`VirtualAlloc`) | Windows |
 | `src/enumerate_win.cpp` | `listDrives()`: Nummer, Modell, Größe, Bustyp, Removable, IsSystem (`IOCTL_STORAGE_QUERY_PROPERTY`, `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`) | Windows |
 | `src/wiper.{h,cpp}` | `runWipe(dev, randomPasses, progressCb, cancelFlag)` und `runVerifyZero(dev, progressCb, cancelFlag)`; Blockgröße 1 MiB, letzter Block gekürzt (auf Sektorgröße ausgerichtet); Ergebnisstruktur mit Status, erster Abweichungsposition, Anzahl abweichender Bytes, Hex-Auszug (32 Byte) | portabel |
+| `src/drive.{h,cpp}` | `DriveInfo`, Auswahlregel `isSelectable`, Anzeigeformat `describeDrive` | portabel |
+| `src/util_win.{h,cpp}` | UTF-8/UTF-16, Windows-Fehlertexte, Volume→Disk-Zuordnung, Admin-Prüfung | Windows |
 | `src/gui_win.cpp` | Win32-Fenster; Worker-Thread; Fortschritt per `PostMessage` | Windows |
 | `src/diskwipe.manifest`, `src/resource.rc` | Admin-Manifest, Common Controls v6 | Windows |
 | `tests/` | Testprogramm + Shell-Testskript | Linux/Windows |
@@ -84,7 +87,7 @@ Während eines Laufs sind Laufwerkswahl und Start-Buttons deaktiviert.
 
 1. Muster: deterministisch (gleicher Seed+Block → gleiche Bytes), unterschiedliche Seeds → unterschiedliche Bytes, Zero-Muster nur 0x00, Zufallsmuster nicht trivial (Byte-Histogramm grob gleichverteilt).
 2. Wipe auf Image mit Größe, die kein Vielfaches von 1 MiB ist (z.B. 64 MiB + 3 Sektoren): Ergebnis Erfolg.
-3. Integration mit FAT32-Image: `mkfs.vfat` + `mcopy` von Testdateien (Text mit eindeutigen Markern, JPEG, PDF). Vorher: `grep` findet Marker, PhotoRec stellt Dateien wieder her. Nach Wipe: `grep -c` auf Marker = 0, `cmp` gegen `/dev/zero` (gleiche Länge) identisch, PhotoRec stellt 0 Dateien her.
+3. Integration mit FAT32-Image: `mkfs.vfat` + `mcopy` von Testdateien (Text mit eindeutigen Markern, PNG, PDF; eine Datei wird vorher gelöscht). Vorher: `grep` findet Marker, PhotoRec stellt Dateien wieder her. Nach Wipe: `grep -c` auf Marker = 0, `cmp` gegen `/dev/zero` (gleiche Länge) identisch, PhotoRec stellt 0 Dateien her.
 4. Verify erkennt Manipulation: ein Byte nach dem Wipe ändern → Fehler mit exakt dieser Position, Anzahl 1.
 5. Mock-Device mit Schreibfehler bei Offset X → Ergebnis Fehler, nicht Erfolg.
 6. Mock-Device mit Lesefehler beim Verify → Fehler.
@@ -93,7 +96,7 @@ Während eines Laufs sind Laufwerkswahl und Start-Buttons deaktiviert.
 
 ### Automatisch (Windows-Build über WSL-Interop, `make test-win`)
 
-`diskwipe_tests.exe` führt Tests 1, 2, 4–8 mit `FileDevice` unter Windows aus.
+`diskwipe_tests.exe` führt Tests 1, 2, 4–8 mit `FileDevice` unter Windows aus, zusätzlich: `listDrives()` findet die Systemplatte und markiert sie als nicht auswählbar (läuft ohne Adminrechte, öffnet Laufwerke nur zur Abfrage).
 
 ### Manuell (Windows, Stick ohne wichtige Daten)
 
@@ -108,6 +111,23 @@ Während eines Laufs sind Laufwerkswahl und Start-Buttons deaktiviert.
 
 Das Vorgehen wird als `docs/manual-test.md` mitgeliefert.
 
+## Auslieferung
+
+- Das Programm läuft vollständig nativ unter Windows 10/11 (x64). WSL wird nur zum Bauen gebraucht.
+- **Installer** `diskwipe-<version>-setup.exe` (NSIS, baubar unter Linux mit `makensis`):
+  - installiert nach `%ProgramFiles%\diskwipe` (benötigt Adminrechte)
+  - Startmenü-Eintrag, optional Desktop-Verknüpfung (Checkbox im Installer)
+  - Deinstaller, Eintrag unter "Apps & Features" (Name, Version, Herausgeber, Größe)
+  - Oberfläche auf Deutsch
+- **Portable** `diskwipe-<version>-portable.exe`: identisch mit der installierten Exe, ohne Installation startbar.
+- `SHA256SUMS.txt` mit den Prüfsummen beider Dateien.
+- Die Version steht an einer Stelle (`VERSION`-Datei). Sie fließt in den Fenstertitel, die Exe-Versionsinfo (VERSIONINFO-Ressource) und den Installer ein.
+- **GitHub Actions:**
+  - Workflow `ci.yml` bei jedem Push/PR: Linux-Tests (Unit + Integration inkl. PhotoRec), Windows-Exe und Installer bauen.
+  - Workflow `release.yml` bei Tag `v*`: prüft, dass der Tag zur `VERSION`-Datei passt, baut und testet, führt die Windows-Tests auf einem `windows-latest`-Runner aus und legt ein GitHub-Release mit Installer, portabler Exe und `SHA256SUMS.txt` an.
+- Keine Code-Signatur. README erklärt die SmartScreen-Warnung und wie man die Prüfsumme kontrolliert.
+- Lokal: `make dist` erzeugt dieselben Dateien unter `dist/`.
+
 ## Nicht im Umfang
 
-- CLI-Modus, Linux-Laufzeitversion, ATA/NVMe Secure Erase, Löschen einzelner Dateien/Partitionen, Protokoll-Export (PDF/Zertifikat).
+- CLI-Modus, Linux-Laufzeitversion, ATA/NVMe Secure Erase, Löschen einzelner Dateien/Partitionen, Protokoll-Export (PDF/Zertifikat), Code-Signing, Auto-Update, winget/Chocolatey-Pakete.
