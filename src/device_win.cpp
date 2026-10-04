@@ -16,7 +16,8 @@ std::unique_ptr<WinPhysicalDevice> WinPhysicalDevice::open(const DriveInfo& expe
     bool unchanged = false;
     for (const DriveInfo& cur : listDrives()) {
         if (cur.number != expected.number) continue;
-        unchanged = !cur.system && cur.model == expected.model && cur.size == expected.size && cur.usb == expected.usb &&
+        unchanged = !cur.system && cur.model == expected.model && cur.serial == expected.serial &&
+                    cur.size == expected.size && cur.usb == expected.usb &&
                     cur.removable == expected.removable;
     }
     if (!unchanged) {
@@ -80,6 +81,16 @@ std::unique_ptr<WinPhysicalDevice> WinPhysicalDevice::open(const DriveInfo& expe
     if (d->disk_ == INVALID_HANDLE_VALUE) {
         err = "Laufwerk konnte nicht geöffnet werden: " + winErrorText(GetLastError());
         return nullptr;
+    }
+
+    // 2b. Identität am geöffneten Handle erneut prüfen (schließt das Zeitfenster seit Schritt 0).
+    {
+        const DriveInfo opened = queryDrive(d->disk_, diskNumber);
+        if (opened.model != expected.model || opened.serial != expected.serial || opened.size != expected.size ||
+            opened.usb != expected.usb || opened.removable != expected.removable) {
+            err = "Laufwerk hat sich geändert – bitte Liste aktualisieren";
+            return nullptr;
+        }
     }
 
     // 3. Größe und Sektorgröße.

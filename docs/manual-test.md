@@ -13,7 +13,7 @@ Benötigt: ein USB-Stick **ohne wichtige Daten**, [HxD](https://mh-nexus.de/de/h
 6. Bestätigungsdialog: „loeschen" oder „Löschen" eintippen → Button bleibt grau; Enter drücken → Dialog bleibt offen. Erst exakt `LÖSCHEN` aktiviert den Button.
 
 ## Validierung der Laufwerksintegrität
-7. Laufwerk auswählen, Stick abziehen und einen anderen einstecken, ohne 'Aktualisieren' → Löschen → bestätigen → erwartete Meldung 'Laufwerk hat sich geändert – bitte Liste aktualisieren', nichts wird geschrieben.
+7. Laufwerk auswählen, Stick abziehen und einen anderen einstecken, ohne 'Aktualisieren' → Löschen → bestätigen → Es muss ein Stick mit anderem Modell, anderer Größe oder anderer Seriennummer sein; baugleiche Sticks ohne Seriennummer sind nicht unterscheidbar. Erwartete Meldung 'Laufwerk hat sich geändert – bitte Liste aktualisieren', nichts wird geschrieben.
 
 ## Löschen
 8. Vollständigen Lauf mit 3 Zufallsdurchgängen starten. Fortschritt, MB/s und Restzeit werden angezeigt. Ende: grüner Status „Erfolg: alle N Bytes = 0x00 (4 Durchgänge …)" und Hinweisdialog.

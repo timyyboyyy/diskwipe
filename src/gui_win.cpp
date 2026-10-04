@@ -214,8 +214,9 @@ void startOperation(bool wipe) {
     setRunning(true);
 
     g.worker = std::thread([drive, wipe, randomPasses] {
-        auto* result = new Result();
+        std::unique_ptr<Result> result;
         try {
+            result.reset(new Result());
             std::string err;
             std::unique_ptr<WinPhysicalDevice> dev = WinPhysicalDevice::open(drive, err);
             if (!dev) {
@@ -236,10 +237,22 @@ void startOperation(bool wipe) {
                 *result = wipe ? runWipe(*dev, randomPasses, report, g.cancel) : runVerifyZero(*dev, report, g.cancel);
             }
         } catch (const std::exception& e) {
+            if (!result) result.reset(new Result());
             result->status = Status::IoError;
             result->message = e.what();
+        } catch (...) {
+            if (!result) result.reset(new Result());
+            result->status = Status::IoError;
+            result->message = "Unbekannter Fehler";
         }
-        PostMessageW(g.wnd, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(result));
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            if (PostMessageW(g.wnd, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(result.get()))) {
+                result.release();  // Besitz geht an onDone über
+                break;
+            }
+            Sleep(50);
+        }
+        // Schlägt das Posten dauerhaft fehl, räumt der unique_ptr das Ergebnis auf.
     });
 }
 
@@ -393,6 +406,10 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
                             L"Es läuft noch ein Vorgang. Abbrechen und beenden?\n"
                             L"Der Datenträger ist dann unvollständig gelöscht.",
                             L"diskwipe", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
+                if (!g.running) {  // Vorgang endete, während die Abfrage offen war
+                    DestroyWindow(wnd);
+                    return 0;
+                }
                 g.closing = true;
                 g.cancel = true;
                 appendLog(L"Beenden: Abbruch angefordert …");

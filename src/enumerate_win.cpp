@@ -56,6 +56,34 @@ bool systemDiskNumbers(std::vector<DWORD>& out) {
 
 }  // namespace
 
+DriveInfo queryDrive(HANDLE h, int number) {
+    DriveInfo d;
+    d.number = number;
+
+    STORAGE_PROPERTY_QUERY query{};
+    query.PropertyId = StorageDeviceProperty;
+    query.QueryType = PropertyStandardQuery;
+    std::vector<BYTE> buf(1024);
+    DWORD returned = 0;
+    if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query), buf.data(), static_cast<DWORD>(buf.size()),
+                        &returned, nullptr) &&
+        returned >= sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
+        const auto* desc = reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR*>(buf.data());
+        d.usb = desc->BusType == BusTypeUsb;
+        d.removable = desc->RemovableMedia != FALSE;
+        d.model = trim(descriptorString(buf, returned, desc->VendorIdOffset) + " " +
+                       descriptorString(buf, returned, desc->ProductIdOffset));
+        d.serial = descriptorString(buf, returned, desc->SerialNumberOffset);
+    }
+
+    std::vector<BYTE> geo(256);
+    DWORD geoReturned = 0;
+    if (DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, nullptr, 0, geo.data(), static_cast<DWORD>(geo.size()),
+                        &geoReturned, nullptr))
+        d.size = static_cast<uint64_t>(reinterpret_cast<const DISK_GEOMETRY_EX*>(geo.data())->DiskSize.QuadPart);
+    return d;
+}
+
 std::vector<DriveInfo> listDrives() {
     std::vector<DWORD> system;
     const bool systemKnown = systemDiskNumbers(system);
@@ -65,30 +93,7 @@ std::vector<DriveInfo> listDrives() {
         const std::wstring path = L"\\\\.\\PhysicalDrive" + std::to_wstring(n);
         HANDLE h = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
         if (h == INVALID_HANDLE_VALUE) continue;
-
-        DriveInfo d;
-        d.number = n;
-
-        STORAGE_PROPERTY_QUERY query{};
-        query.PropertyId = StorageDeviceProperty;
-        query.QueryType = PropertyStandardQuery;
-        std::vector<BYTE> buf(1024);
-        DWORD returned = 0;
-        if (DeviceIoControl(h, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query), buf.data(),
-                            static_cast<DWORD>(buf.size()), &returned, nullptr) &&
-            returned >= sizeof(STORAGE_DEVICE_DESCRIPTOR)) {
-            const auto* desc = reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR*>(buf.data());
-            d.usb = desc->BusType == BusTypeUsb;
-            d.removable = desc->RemovableMedia != FALSE;
-            d.model = trim(descriptorString(buf, returned, desc->VendorIdOffset) + " " +
-                           descriptorString(buf, returned, desc->ProductIdOffset));
-        }
-
-        std::vector<BYTE> geo(256);
-        DWORD geoReturned = 0;
-        if (DeviceIoControl(h, IOCTL_DISK_GET_DRIVE_GEOMETRY_EX, nullptr, 0, geo.data(), static_cast<DWORD>(geo.size()),
-                            &geoReturned, nullptr))
-            d.size = static_cast<uint64_t>(reinterpret_cast<const DISK_GEOMETRY_EX*>(geo.data())->DiskSize.QuadPart);
+        DriveInfo d = queryDrive(h, n);
         CloseHandle(h);
 
         const bool onSystemVolume = std::find(system.begin(), system.end(), static_cast<DWORD>(n)) != system.end();

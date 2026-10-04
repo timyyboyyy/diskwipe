@@ -7,6 +7,7 @@ namespace dw {
 struct DriveInfo {
     int number = -1;      // N in \\.\PhysicalDriveN
     std::string model;    // UTF-8
+    std::string serial;   // kann leer sein
     uint64_t size = 0;
     bool usb = false;
     bool removable = false;
