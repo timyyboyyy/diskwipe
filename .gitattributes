@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.rc       text eol=crlf
+*.manifest text eol=crlf
+*.jpg binary
+*.pdf binary
+*.img binary

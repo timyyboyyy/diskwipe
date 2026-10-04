@@ -1,0 +1,20 @@
+# Build output
+build/
+*.o
+*.obj
+*.exe
+*.res
+*.d
+
+# Test artifacts
+tests/tmp/
+*.img
+recup_dir*/
+photorec.log
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
