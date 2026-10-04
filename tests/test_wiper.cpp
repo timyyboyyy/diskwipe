@@ -189,3 +189,9 @@ TEST(zero_size_device_is_io_error) {
     CHECK(runPasses(m, standardPlan(), nullptr, cancel).status == Status::IoError);
     CHECK(runVerifyZero(m, nullptr, cancel).status == Status::IoError);
 }
+
+TEST(empty_plan_is_io_error) {
+    MemoryDevice m(kBlockSize);
+    std::atomic<bool> cancel{false};
+    CHECK(runPasses(m, {}, nullptr, cancel).status == Status::IoError);
+}

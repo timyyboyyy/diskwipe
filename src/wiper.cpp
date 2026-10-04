@@ -64,6 +64,7 @@ Result runPlan(BlockDevice& dev, const std::vector<PassSpec>& plan, bool doWrite
     };
 
     if (total == 0) return fail(Status::IoError, 0, 0, "Kapazität ist 0 oder nicht ermittelbar");
+    if (plan.empty()) return fail(Status::IoError, 0, 0, "Leerer Löschplan");
 
     AlignedBuffer expected(kBlockSize), actual(kBlockSize);
     Result ok;
