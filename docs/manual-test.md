@@ -36,7 +36,7 @@ Benötigt: ein USB-Stick **ohne wichtige Daten**, [HxD](https://mh-nexus.de/de/h
 16. Portable Exe direkt starten → funktioniert identisch.
 
 ## Automatische Liste, Icon und Gesamtfortschritt
-17. Fenster offen lassen, Stick abziehen und wieder einstecken, ohne „Aktualisieren" zu drücken → die Liste aktualisiert sich nach ca. einer halben Sekunde, im Log erscheinen „Laufwerk entfernt: …" / „Laufwerk angeschlossen: …". Ist ein Stick ausgewählt und ein anderer Stick wird ein-/abgesteckt, bleibt die Auswahl erhalten.
+17. Fenster offen lassen, Stick abziehen und wieder einstecken, ohne „Aktualisieren" zu drücken → die Liste aktualisiert sich nach ca. einer halben Sekunde, im Log erscheinen „Laufwerk entfernt: …" / „Laufwerk angeschlossen: …". Ist ein Stick ausgewählt und ein anderer Stick wird ein-/abgesteckt, bleibt die Auswahl erhalten. Wird der ausgewählte Stick abgezogen und es bleiben andere Laufwerke übrig, wird die Auswahl geleert (Löschen/Prüfen ausgegraut, Log „Ausgewähltes Laufwerk entfernt – bitte neu auswählen."); es wird nie automatisch ein anderes Laufwerk gewählt. Ein Stick, der bei leerer Liste eingesteckt wird, wird automatisch ausgewählt.
 18. Jeder Eintrag zeigt Laufwerksbuchstabe und Bezeichnung (z.B. `E: (MEINSTICK)`); ein Stick ohne Bezeichnung zeigt nur `E:`.
 19. Icon (USB-Stick mit Lösch-Symbol) ist sichtbar im Fenster, in der Taskleiste, an die Taskleiste angeheftet, im Startmenü und im Installer/Deinstaller.
 20. Während eines Laufs steht im grünen Balken zentriert `Gesamt: N %` (lesbar auf Grün und Grau, auch bei 0 % und 100 %); die Statuszeile darunter zeigt weiter Durchgang, Schritt-Prozent, MB/s und Restzeit. Balken ca. 10 s beobachten, während sich die Prozentzahl nicht ändert: Text bleibt sichtbar, kein Flackern.

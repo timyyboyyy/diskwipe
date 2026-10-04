@@ -59,7 +59,7 @@ struct App {
     bool running = false;
     bool wipeMode = false;
     bool closing = false;
-    bool modal = false;           // modaler Dialog offen: keine Listenänderung
+    int modal = 0;                // Tiefe offener modaler Dialoge: keine Listenänderung
     bool refreshPending = false;  // Geräteänderung während eines Laufs, wird danach nachgeholt
     HDEVNOTIFY devNotify = nullptr;
     std::mutex progressMutex;
@@ -74,6 +74,13 @@ struct App {
     ULONGLONG taskbarDone = 0;
 };
 App g;
+
+struct ModalGuard {
+    ModalGuard() { ++g.modal; }
+    ~ModalGuard() { --g.modal; }
+    ModalGuard(const ModalGuard&) = delete;
+    ModalGuard& operator=(const ModalGuard&) = delete;
+};
 
 int S(int v) { return MulDiv(v, g.dpi, 96); }
 
@@ -122,7 +129,7 @@ void setResult(const std::wstring& text, COLORREF color) {
 
 void setRunning(bool running) {
     g.running = running;
-    const bool haveDrive = !g.drives.empty();
+    const bool haveDrive = SendMessageW(g.drive, CB_GETCURSEL, 0, 0) != CB_ERR;
     EnableWindow(g.drive, !running);
     EnableWindow(g.refresh, !running);
     EnableWindow(g.internal, !running);
@@ -181,8 +188,14 @@ void refreshDrives(bool automatic = false) {
     for (const std::string& t : g.driveTexts)
         SendMessageW(g.drive, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(toWide(t).c_str()));
     if (!g.drives.empty()) {
-        const int keep = haveSelected ? findDrive(g.drives, selected) : -1;
-        SendMessageW(g.drive, CB_SETCURSEL, keep >= 0 ? keep : 0, 0);
+        if (haveSelected) {
+            // Nie stillschweigend ein anderes Laufwerk wählen: verschwunden = keine Auswahl.
+            const int keep = findDrive(g.drives, selected);
+            SendMessageW(g.drive, CB_SETCURSEL, keep >= 0 ? keep : -1, 0);
+            if (keep < 0) appendLog(L"Ausgewähltes Laufwerk entfernt – bitte neu auswählen.");
+        } else {
+            SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
+        }
     }
     setRunning(false);
     if (!automatic)
@@ -192,7 +205,7 @@ void refreshDrives(bool automatic = false) {
 
 // Nachholen einer während Lauf/Dialog zurückgestellten automatischen Aktualisierung.
 void flushPendingRefresh() {
-    if (!g.refreshPending || g.running || g.modal || g.closing) return;
+    if (!g.refreshPending || g.running || g.modal > 0 || g.closing) return;
     g.refreshPending = false;
     refreshDrives(true);
 }
@@ -309,18 +322,23 @@ void paintProgress(HWND wnd, HDC target) {
     GetClientRect(wnd, &rc);
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
     if (w <= 0 || h <= 0) return;
-    HDC dc = CreateCompatibleDC(target);
-    HBITMAP bmp = CreateCompatibleBitmap(target, w, h);
-    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    HDC memDc = CreateCompatibleDC(target);
+    HBITMAP bmp = memDc ? CreateCompatibleBitmap(target, w, h) : nullptr;
+    const bool buffered = memDc && bmp;
+    HDC dc = buffered ? memDc : target;  // Fallback: direkt auf das Ziel zeichnen
+    HGDIOBJ oldBmp = buffered ? SelectObject(dc, bmp) : nullptr;
     HGDIOBJ oldFont = SelectObject(dc, g.font);
-    SetBkMode(dc, TRANSPARENT);
+    const int oldBk = SetBkMode(dc, TRANSPARENT);
     fillRectColor(dc, rc, COLOR_BTNFACE);
 
     LRESULT pos = SendMessageW(wnd, PBM_GETPOS, 0, 0);
     if (pos < 0) pos = 0;
     if (pos > 1000) pos = 1000;
     RECT inner = rc;
-    const bool themed = g_progressTheme != nullptr;
+    HIGHCONTRASTW hc = {};
+    hc.cbSize = sizeof(hc);
+    const bool highContrast = SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof(hc), &hc, 0) && (hc.dwFlags & HCF_HIGHCONTRASTON);
+    const bool themed = g_progressTheme != nullptr && !highContrast;
     if (themed) {
         DrawThemeBackground(g_progressTheme, dc, PP_BAR, 0, &rc, nullptr);
         GetThemeBackgroundContentRect(g_progressTheme, dc, PP_BAR, 0, &rc, &inner);
@@ -349,11 +367,12 @@ void paintProgress(HWND wnd, HDC target) {
         drawProgressText(dc, rc, restClip, GetSysColor(COLOR_WINDOWTEXT), text);
     }
 
-    BitBlt(target, 0, 0, w, h, dc, 0, 0, SRCCOPY);
+    if (buffered) BitBlt(target, 0, 0, w, h, dc, 0, 0, SRCCOPY);
     SelectObject(dc, oldFont);
-    SelectObject(dc, oldBmp);
-    DeleteObject(bmp);
-    DeleteDC(dc);
+    SetBkMode(dc, oldBk);
+    if (buffered) SelectObject(dc, oldBmp);
+    if (bmp) DeleteObject(bmp);
+    if (memDc) DeleteDC(memDc);
 }
 
 LRESULT CALLBACK progressSubclass(HWND wnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
@@ -421,10 +440,12 @@ void startOperation(bool wipe) {
     if (randomPasses > kMaxRandomPasses) randomPasses = kMaxRandomPasses;
 
     if (wipe) {
-        g.modal = true;
-        const INT_PTR confirmed = DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
-                                                  reinterpret_cast<LPARAM>(&driveText));
-        g.modal = false;
+        INT_PTR confirmed;
+        {
+            ModalGuard guard;
+            confirmed = DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
+                                        reinterpret_cast<LPARAM>(&driveText));
+        }
         if (confirmed != IDOK) {
             appendLog(L"Löschen nicht bestätigt.");
             flushPendingRefresh();
@@ -503,13 +524,12 @@ void onDone(Result* raw) {
         setResult(text, RGB(0, 128, 0));
         appendLog(text);
         if (g.wipeMode && !g.closing) {
-            g.modal = true;
+            ModalGuard guard;
             MessageBoxW(g.wnd,
                         L"Der Datenträger wurde vollständig überschrieben und verifiziert.\n\n"
                         L"Hinweis: Reservebereiche des Flash-Controllers sind per Software nicht erreichbar. "
                         L"Für maximale Sicherheit den Stick zusätzlich physisch zerstören.",
                         L"diskwipe", MB_ICONINFORMATION);
-            g.modal = false;
         }
         break;
     }
@@ -544,7 +564,9 @@ void onDone(Result* raw) {
         DestroyWindow(g.wnd);
         return;
     }
-    if (g.wipeMode && !g.modal) {
+    if (g.wipeMode && g.modal > 0) {
+        g.refreshPending = true;  // Dialog offen: Nachholen beim Schließen
+    } else if (g.wipeMode) {
         const bool automatic = g.refreshPending;
         g.refreshPending = false;
         refreshDrives(automatic);
@@ -624,7 +646,7 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == IDT_REFRESH) {
             KillTimer(wnd, IDT_REFRESH);
-            if (g.running || g.modal) g.refreshPending = true;
+            if (g.running || g.modal > 0) g.refreshPending = true;
             else refreshDrives(true);
             return 0;
         }
@@ -637,17 +659,22 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_INTERNAL:
             if (HIWORD(wp) == BN_CLICKED) {
                 if (SendMessageW(g.internal, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                    g.modal = true;
-                    const int answer = MessageBoxW(wnd,
-                                                   L"Interne Laufwerke anzeigen?\n\nDas Löschen einer internen Festplatte "
-                                                   L"vernichtet alle Daten darauf. Die Systemplatte wird nie angezeigt.",
-                                                   L"Warnung", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
-                    g.modal = false;
+                    int answer;
+                    {
+                        ModalGuard guard;
+                        answer = MessageBoxW(wnd,
+                                             L"Interne Laufwerke anzeigen?\n\nDas Löschen einer internen Festplatte "
+                                             L"vernichtet alle Daten darauf. Die Systemplatte wird nie angezeigt.",
+                                             L"Warnung", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+                    }
                     if (answer != IDYES) SendMessageW(g.internal, BM_SETCHECK, BST_UNCHECKED, 0);
                 }
                 g.refreshPending = false;  // die manuelle Aktualisierung unten deckt es ab
                 refreshDrives();
             }
+            return 0;
+        case IDC_DRIVE:
+            if (HIWORD(wp) == CBN_SELCHANGE) setRunning(g.running);
             return 0;
         case IDC_WIPE:
             startOperation(true);
@@ -678,12 +705,14 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_CLOSE:
         if (g.running) {
-            g.modal = true;
-            const int answer = MessageBoxW(wnd,
-                                           L"Es läuft noch ein Vorgang. Abbrechen und beenden?\n"
-                                           L"Der Datenträger ist dann unvollständig gelöscht.",
-                                           L"diskwipe", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
-            g.modal = false;
+            int answer;
+            {
+                ModalGuard guard;
+                answer = MessageBoxW(wnd,
+                                     L"Es läuft noch ein Vorgang. Abbrechen und beenden?\n"
+                                     L"Der Datenträger ist dann unvollständig gelöscht.",
+                                     L"diskwipe", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+            }
             if (answer == IDYES) {
                 if (!g.running) {  // Vorgang endete, während die Abfrage offen war
                     DestroyWindow(wnd);
