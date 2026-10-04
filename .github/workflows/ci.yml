@@ -10,7 +10,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Abhängigkeiten installieren
         run: |
           sudo apt-get update
@@ -22,11 +22,11 @@ jobs:
         run: make build/diskwipe_tests.exe
       - name: Exe und Installer bauen
         run: make dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-tests
           path: build/diskwipe_tests.exe
@@ -35,12 +35,12 @@ jobs:
     needs: build-linux
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: windows-tests
           path: build
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist
