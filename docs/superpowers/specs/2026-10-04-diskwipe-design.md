@@ -36,7 +36,7 @@ Standard: 3 Zufallsdurchgänge + 1 Nulldurchgang (Durchgänge in der GUI einstel
 - Programm startet nur mit Adminrechten (Manifest; zusätzlich Laufzeitprüfung).
 - Standardliste zeigt nur Laufwerke mit Bustyp USB oder Wechselmedium.
 - Die Systemplatte (Laufwerk, das das Windows-Volume enthält) wird nie angezeigt. Lässt sie sich nicht ermitteln, gilt jedes nicht-USB-/nicht-Wechsel-Laufwerk als Systemplatte.
-- Laufwerke mit Größe 0 (z.B. Kartenleser ohne Karte) werden nicht angezeigt.
+- Laufwerke kleiner als 1 MiB (z.B. Kartenleser ohne Karte, Firmware-Speicher von USB-Peripherie) werden nicht angezeigt.
 - Andere interne Platten nur über Checkbox "Interne Laufwerke anzeigen" mit Warndialog.
 - Vor Start: Bestätigungsdialog mit Modell, Größe, Laufwerksnummer; Nutzer muss `LÖSCHEN` eintippen.
 
@@ -47,7 +47,7 @@ Standard: 3 Zufallsdurchgänge + 1 Nulldurchgang (Durchgänge in der GUI einstel
 | `src/pattern.{h,cpp}` | `fillPattern(buf, len, kind, seed, blockIndex)`; `kind` ∈ {Zero, Random}; Seed-Erzeugung | portabel |
 | `src/device.h` | abstrakte Klasse `BlockDevice`: `size()`, `sectorSize()`, `read(off, buf, n)`, `write(off, buf, n)`, `flush()` | portabel |
 | `src/device_file.cpp` | `FileDevice` auf Image-Datei (Tests) | Linux/Windows |
-| `src/device_win.cpp` | `WinPhysicalDevice`: Volumes des Laufwerks sperren + aushängen (`FSCTL_LOCK_VOLUME`, `FSCTL_DISMOUNT_VOLUME`), `\\.\PhysicalDriveN` mit `FILE_FLAG_NO_BUFFERING \| FILE_FLAG_WRITE_THROUGH` öffnen, Größe via `IOCTL_DISK_GET_LENGTH_INFO`, Sektorgröße via `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, sektorausgerichtete Puffer (`VirtualAlloc`) | Windows |
+| `src/device_win.cpp` | `WinPhysicalDevice`: Volumes des Laufwerks sperren + aushängen (`FSCTL_LOCK_VOLUME`, `FSCTL_DISMOUNT_VOLUME`), `\\.\PhysicalDriveN` mit `FILE_FLAG_NO_BUFFERING \| FILE_FLAG_WRITE_THROUGH` öffnen, Größe via `IOCTL_DISK_GET_LENGTH_INFO`, Sektorgröße via `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, Puffer kommen 4096-Byte-ausgerichtet aus `wiper` | Windows |
 | `src/enumerate_win.cpp` | `listDrives()`: Nummer, Modell, Größe, Bustyp, Removable, IsSystem (`IOCTL_STORAGE_QUERY_PROPERTY`, `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`) | Windows |
 | `src/wiper.{h,cpp}` | `runWipe(dev, randomPasses, progressCb, cancelFlag)` und `runVerifyZero(dev, progressCb, cancelFlag)`; Blockgröße 1 MiB, letzter Block gekürzt (auf Sektorgröße ausgerichtet); Ergebnisstruktur mit Status, erster Abweichungsposition, Anzahl abweichender Bytes, Hex-Auszug (32 Byte) | portabel |
 | `src/drive.{h,cpp}` | `DriveInfo`, Auswahlregel `isSelectable`, Anzeigeformat `describeDrive` | portabel |

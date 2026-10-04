@@ -1,0 +1,42 @@
+#include <windows.h>
+#include "resource.h"
+#include "version.h"
+
+IDI_APP ICON "src/diskwipe.ico"
+
+1 24 "src/diskwipe.manifest"
+
+IDD_CONFIRM DIALOGEX 0, 0, 300, 160
+STYLE DS_MODALFRAME | DS_CENTER | DS_SHELLFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "diskwipe"
+FONT 9, "Segoe UI", 0, 0, 0x1
+BEGIN
+    LTEXT           "", IDC_CONFIRM_TEXT, 10, 10, 280, 94
+    EDITTEXT        IDC_CONFIRM_EDIT, 10, 110, 280, 14, ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "OK", IDOK, 180, 136, 52, 16
+    PUSHBUTTON      "Cancel", IDCANCEL, 238, 136, 52, 16
+END
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION DW_VERSION_NUM
+PRODUCTVERSION DW_VERSION_NUM
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040704B0"
+        BEGIN
+            VALUE "CompanyName", "timyyboyyy"
+            VALUE "FileDescription", "diskwipe - Datentraeger sicher loeschen"
+            VALUE "FileVersion", DW_VERSION_STR
+            VALUE "OriginalFilename", "diskwipe.exe"
+            VALUE "ProductName", "diskwipe"
+            VALUE "ProductVersion", DW_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0407, 1200
+    END
+END

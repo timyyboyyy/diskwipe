@@ -1,5 +1,6 @@
 # Build output
 build/
+dist/
 *.o
 *.obj
 *.exe
@@ -18,3 +19,6 @@ photorec.log
 *.swp
 .DS_Store
 Thumbs.db
+
+# Icon-Vorschau
+tools/icon-*preview.png
