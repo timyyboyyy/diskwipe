@@ -41,8 +41,8 @@ std::string build(const DriveInfo& d, const std::string& modelSuffix) {
     std::string vols;
     for (size_t i = 0; i < d.volumes.size(); ++i) vols += (i == 0 ? "" : ", ") + d.volumes[i];
     if (vols.empty()) vols = "-";
-    return "Disk " + std::to_string(d.number) + " – " + vols + " – " + formatBytes(d.size) + " – " + modelOrUnknown(d) +
-           modelSuffix + " – " + driveKind(d);
+    return "Disk " + std::to_string(d.number) + " – " + vols + " – " + modelOrUnknown(d) + modelSuffix + " – " +
+           formatBytes(d.size) + " – " + driveKind(d);
 }
 
 }  // namespace
