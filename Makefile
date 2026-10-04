@@ -56,7 +56,7 @@ $(BUILD)/resource.o: src/resource.rc src/resource.h src/diskwipe.manifest src/di
 
 $(BUILD)/diskwipe.exe: $(CORE_SRC) $(WIN_LIB_SRC) src/gui_win.cpp $(BUILD)/resource.o $(BUILD)/version.h $(HEADERS)
 	$(WINCXX) $(CXXFLAGS) $(WINFLAGS) -mwindows -municode -o $@ \
-	  $(CORE_SRC) $(WIN_LIB_SRC) src/gui_win.cpp $(BUILD)/resource.o -lbcrypt -lcomctl32
+	  $(CORE_SRC) $(WIN_LIB_SRC) src/gui_win.cpp $(BUILD)/resource.o -lbcrypt -lcomctl32 -lole32 -luuid
 
 windows: $(BUILD)/diskwipe.exe
 

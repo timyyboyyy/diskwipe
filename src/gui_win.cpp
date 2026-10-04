@@ -1,7 +1,11 @@
 // Minimalistische Win32-Oberfläche für diskwipe.
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601  // Windows 7: ITaskbarList3, ChangeWindowMessageFilterEx
+#endif
 #include <windows.h>
 #include <commctrl.h>
 #include <dbt.h>
+#include <shobjidl.h>
 
 #include <atomic>
 #include <chrono>
@@ -60,6 +64,11 @@ struct App {
     Clock::time_point started;
     Clock::time_point lastPost;  // nur im Worker-Thread benutzt
     COLORREF resultColor = RGB(0, 0, 0);
+    int overallPercent = -1;  // 0..100, -1 = noch kein Vorgang (kein Text im Balken)
+    UINT taskbarCreatedMsg = 0;
+    ITaskbarList3* taskbar = nullptr;  // erst nach "TaskbarButtonCreated" vorhanden
+    TBPFLAG taskbarState = TBPF_NOPROGRESS;
+    ULONGLONG taskbarDone = 0;
 };
 App g;
 
@@ -228,6 +237,82 @@ INT_PTR CALLBACK confirmProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+// Setzt Balken, Text im Balken und (über setTaskbarProgress) die Taskleiste. permille: 0..1000.
+void setOverallProgress(int permille);
+
+void applyTaskbar() {
+    if (!g.taskbar) return;
+    g.taskbar->SetProgressState(g.wnd, g.taskbarState);
+    if (g.taskbarState == TBPF_NORMAL) g.taskbar->SetProgressValue(g.wnd, g.taskbarDone, 1000);
+}
+
+// Fehlt das Interface (z.B. vor TaskbarButtonCreated), wird der Zustand gemerkt und später angewendet.
+void setTaskbarProgress(TBPFLAG state, ULONGLONG done = 0) {
+    g.taskbarState = state;
+    g.taskbarDone = done;
+    applyTaskbar();
+}
+
+void createTaskbarList() {
+    if (g.taskbar) return;
+    ITaskbarList3* list = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3,
+                                reinterpret_cast<void**>(&list))) ||
+        !list)
+        return;
+    if (FAILED(list->HrInit())) {
+        list->Release();
+        return;
+    }
+    g.taskbar = list;
+    applyTaskbar();
+}
+
+void setOverallProgress(int permille) {
+    if (permille < 0) permille = 0;
+    if (permille > 1000) permille = 1000;
+    SendMessageW(g.progress, PBM_SETPOS, static_cast<WPARAM>(permille), 0);
+    const int percent = permille / 10;
+    if (percent != g.overallPercent) {
+        g.overallPercent = percent;
+        InvalidateRect(g.progress, nullptr, FALSE);
+    }
+    if (g.taskbarState == TBPF_NORMAL) {
+        g.taskbarDone = static_cast<ULONGLONG>(permille);
+        if (g.taskbar) g.taskbar->SetProgressValue(g.wnd, g.taskbarDone, 1000);
+    }
+}
+
+// Zeichnet nach dem Standard-Paint den Text "Gesamt: N %" mittig in den Balken.
+LRESULT CALLBACK progressSubclass(HWND wnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
+    switch (msg) {
+    case WM_PAINT:
+    case WM_PRINTCLIENT: {
+        const LRESULT r = DefSubclassProc(wnd, msg, wp, lp);
+        if (g.overallPercent >= 0) {
+            HDC given = (msg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wp) : nullptr;
+            HDC dc = given ? given : GetDC(wnd);
+            if (dc) {
+                RECT rc;
+                GetClientRect(wnd, &rc);
+                const std::wstring text = L"Gesamt: " + std::to_wstring(g.overallPercent) + L" %";
+                HGDIOBJ oldFont = SelectObject(dc, g.font);
+                SetBkMode(dc, TRANSPARENT);
+                SetTextColor(dc, RGB(0, 0, 0));
+                DrawTextW(dc, text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                SelectObject(dc, oldFont);
+                if (!given) ReleaseDC(wnd, dc);
+            }
+        }
+        return r;
+    }
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(wnd, progressSubclass, id);
+        break;
+    }
+    return DefSubclassProc(wnd, msg, wp, lp);
+}
+
 void onProgress() {
     Progress p;
     {
@@ -239,7 +324,7 @@ void onProgress() {
     const int phaseIndex = (g.wipeMode && p.phase == Phase::Verify) ? 1 : 0;
     const double unitsTotal = double(p.totalPasses) * phasesPerPass * double(p.total);
     const double unitsDone = double((p.pass - 1) * phasesPerPass + phaseIndex) * double(p.total) + double(p.done);
-    SendMessageW(g.progress, PBM_SETPOS, static_cast<WPARAM>(unitsDone * 1000.0 / unitsTotal), 0);
+    setOverallProgress(static_cast<int>(unitsDone * 1000.0 / unitsTotal));
 
     const double elapsed = std::chrono::duration<double>(Clock::now() - g.started).count();
     const double speed = elapsed > 0 ? unitsDone / elapsed : 0;
@@ -277,7 +362,8 @@ void startOperation(bool wipe) {
     g.cancel = false;
     g.started = Clock::now();
     g.lastPost = Clock::time_point{};
-    SendMessageW(g.progress, PBM_SETPOS, 0, 0);
+    setTaskbarProgress(TBPF_NORMAL, 0);
+    setOverallProgress(0);
     setResult(L"", RGB(0, 0, 0));
     SetWindowTextW(g.status, L"Laufwerk wird geöffnet …");
     appendLog((wipe ? L"Löschen gestartet: " : L"Prüfung gestartet: ") + toWide(driveText) +
@@ -335,7 +421,8 @@ void onDone(Result* raw) {
 
     switch (r->status) {
     case Status::Success: {
-        SendMessageW(g.progress, PBM_SETPOS, 1000, 0);
+        setOverallProgress(1000);
+        setTaskbarProgress(TBPF_NOPROGRESS);
         std::wstring text = L"Erfolg: alle " + std::to_wstring(r->bytesTotal) + L" Bytes = 0x00";
         if (g.wipeMode) text += L" (" + std::to_wstring(r->passesCompleted) + L" Durchgänge geschrieben und verifiziert)";
         setResult(text, RGB(0, 128, 0));
@@ -353,18 +440,21 @@ void onDone(Result* raw) {
     }
     case Status::Cancelled: {
         const std::wstring text = g.wipeMode ? L"Abgebrochen – Datenträger unvollständig gelöscht" : L"Prüfung abgebrochen";
+        setTaskbarProgress(TBPF_PAUSED);
         setResult(text, RGB(200, 110, 0));
         appendLog(text);
         break;
     }
     case Status::IoError: {
         const std::wstring text = L"Fehler: " + toWide(r->message);
+        setTaskbarProgress(TBPF_ERROR);
         setResult(text, RGB(190, 0, 0));
         appendLog(text);
         break;
     }
     case Status::VerifyMismatch: {
         std::wstring text = L"Prüfung fehlgeschlagen";
+        setTaskbarProgress(TBPF_ERROR);
         if (g.wipeMode) text += L" in Durchgang " + std::to_wstring(r->failedPass);
         text += L": " + std::to_wstring(r->mismatchCount) + L" abweichende Bytes, erste bei Offset " +
                 std::to_wstring(r->firstMismatch);
@@ -413,11 +503,12 @@ void createControls() {
     g.verifyBtn = makeChild(WC_BUTTONW, L"Prüfen", BS_PUSHBUTTON | WS_TABSTOP, 120, 106, 100, 30, IDC_VERIFY);
     g.cancelBtn = makeChild(WC_BUTTONW, L"Abbrechen", BS_PUSHBUTTON | WS_TABSTOP, 228, 106, 100, 30, IDC_CANCEL);
 
-    g.progress = makeChild(PROGRESS_CLASSW, L"", 0, 12, 148, 456, 18, IDC_PROGRESS);
+    g.progress = makeChild(PROGRESS_CLASSW, L"", 0, 12, 148, 456, 22, IDC_PROGRESS);
+    SetWindowSubclass(g.progress, progressSubclass, 1, 0);
     SendMessageW(g.progress, PBM_SETRANGE32, 0, 1000);
-    g.status = makeChild(WC_STATICW, L"Bereit", SS_LEFT | SS_ENDELLIPSIS, 12, 172, 456, 20, IDC_STATUS);
-    g.result = makeChild(WC_STATICW, L"", SS_LEFT, 12, 194, 456, 36, IDC_RESULT);
-    g.log = makeChild(WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 12, 234, 456, 118, IDC_LOG,
+    g.status = makeChild(WC_STATICW, L"Bereit", SS_LEFT | SS_ENDELLIPSIS, 12, 176, 456, 20, IDC_STATUS);
+    g.result = makeChild(WC_STATICW, L"", SS_LEFT, 12, 198, 456, 36, IDC_RESULT);
+    g.log = makeChild(WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 12, 238, 456, 118, IDC_LOG,
                       WS_EX_CLIENTEDGE);
 
     EnumChildWindows(
@@ -430,6 +521,10 @@ void createControls() {
 }
 
 LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (g.taskbarCreatedMsg && msg == g.taskbarCreatedMsg) {
+        createTaskbarList();
+        return 0;
+    }
     switch (msg) {
     case WM_CREATE:
         g.wnd = wnd;
@@ -532,6 +627,8 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         KillTimer(wnd, IDT_REFRESH);
         if (g.devNotify) UnregisterDeviceNotification(g.devNotify);
         g.devNotify = nullptr;
+        if (g.taskbar) g.taskbar->Release();
+        g.taskbar = nullptr;
         PostQuitMessage(0);
         return 0;
     }
@@ -546,6 +643,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
         MessageBoxW(nullptr, L"diskwipe benötigt Administratorrechte.", L"diskwipe", MB_ICONERROR);
         return 1;
     }
+
+    const bool comOk = SUCCEEDED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED));
 
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS | ICC_UPDOWN_CLASS};
     InitCommonControlsEx(&icc);
@@ -571,11 +670,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RegisterClassExW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT rc{0, 0, S(480), S(364)};
+    RECT rc{0, 0, S(480), S(368)};
     AdjustWindowRect(&rc, style, FALSE);
     HWND wnd = CreateWindowExW(0, wc.lpszClassName, L"diskwipe " DW_VERSION_WSTR, style, CW_USEDEFAULT, CW_USEDEFAULT,
                                rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, inst, nullptr);
-    if (!wnd) return 1;
+    if (!wnd) {
+        if (comOk) CoUninitialize();
+        return 1;
+    }
+    // Der Prozess läuft erhöht, Explorer nicht: die Nachricht muss explizit durchgelassen werden.
+    g.taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarButtonCreated");
+    if (g.taskbarCreatedMsg) ChangeWindowMessageFilterEx(wnd, g.taskbarCreatedMsg, MSGFLT_ALLOW, nullptr);
     ShowWindow(wnd, show);
     UpdateWindow(wnd);
 
@@ -588,5 +693,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     }
     if (g.worker.joinable()) g.worker.join();
     DeleteObject(g.font);
+    if (comOk) CoUninitialize();
     return 0;
 }

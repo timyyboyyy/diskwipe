@@ -34,3 +34,10 @@ Benötigt: ein USB-Stick **ohne wichtige Daten**, [HxD](https://mh-nexus.de/de/h
 14. Installer ausführen: Startmenü-Eintrag vorhanden, optional Desktop-Verknüpfung, Eintrag unter *Einstellungen → Apps* mit Version.
 15. Deinstallieren über *Apps* → Programmordner, Startmenü-Eintrag und Verknüpfung sind weg.
 16. Portable Exe direkt starten → funktioniert identisch.
+
+## Automatische Liste, Icon und Gesamtfortschritt
+17. Fenster offen lassen, Stick abziehen und wieder einstecken, ohne „Aktualisieren" zu drücken → die Liste aktualisiert sich nach ca. einer halben Sekunde, im Log erscheinen „Laufwerk entfernt: …" / „Laufwerk angeschlossen: …". Ist ein Stick ausgewählt und ein anderer Stick wird ein-/abgesteckt, bleibt die Auswahl erhalten.
+18. Jeder Eintrag zeigt Laufwerksbuchstabe und Bezeichnung (z.B. `E: (MEINSTICK)`); ein Stick ohne Bezeichnung zeigt nur `E:`.
+19. Icon (USB-Stick mit Lösch-Symbol) ist sichtbar im Fenster, in der Taskleiste, an die Taskleiste angeheftet, im Startmenü und im Installer/Deinstaller.
+20. Während eines Laufs steht im grünen Balken zentriert `Gesamt: N %` (lesbar auf Grün und Grau, auch bei 0 % und 100 %); die Statuszeile darunter zeigt weiter Durchgang, Schritt-Prozent, MB/s und Restzeit.
+21. Das Taskleisten-Symbol zeigt während des Laufs grünen Fortschritt, nach „Abbrechen" gelb, nach einem Fehler oder fehlgeschlagener Prüfung rot (bis zum nächsten Start); nach erfolgreichem Ende keine Anzeige.

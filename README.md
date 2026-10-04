@@ -5,6 +5,7 @@ Minimalistisches Windows-Tool zum vollständigen, verifizierten Überschreiben v
 - Rohzugriff auf das physische Laufwerk – das Dateisystem (FAT32, exFAT, NTFS …) wird komplett mit überschrieben
 - Standard: **3 Zufallsdurchgänge + 1 Nulldurchgang**, jeder Durchgang wird vollständig zurückgelesen und verifiziert
 - **Prüfen**-Funktion: bestätigt für jeden Datenträger, dass jedes Byte `0x00` ist
+- Die Laufwerksliste aktualisiert sich beim Ein- und Abstecken automatisch; der Gesamtfortschritt steht im Balken und auf dem Taskleisten-Symbol
 - Schutz: standardmäßig nur USB-/Wechseldatenträger, die Systemplatte (inkl. Boot-/EFI-Platte) nie, Bestätigung durch Eintippen von `LÖSCHEN`
 
 ## Installation
