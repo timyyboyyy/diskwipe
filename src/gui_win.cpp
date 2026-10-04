@@ -1,11 +1,14 @@
 // Minimalistische Win32-Oberfläche für diskwipe.
 #ifndef _WIN32_WINNT
-#define _WIN32_WINNT 0x0601  // Windows 7: ITaskbarList3, ChangeWindowMessageFilterEx
+// Ziel Windows 10/11; MinGW deklariert sonst ITaskbarList3/ChangeWindowMessageFilterEx nicht.
+#define _WIN32_WINNT 0x0A00
 #endif
 #include <windows.h>
 #include <commctrl.h>
 #include <dbt.h>
 #include <shobjidl.h>
+#include <uxtheme.h>
+#include <vssym32.h>
 
 #include <atomic>
 #include <chrono>
@@ -254,7 +257,10 @@ void setTaskbarProgress(TBPFLAG state, ULONGLONG done = 0) {
 }
 
 void createTaskbarList() {
-    if (g.taskbar) return;
+    if (g.taskbar) {  // Explorer-Neustart: Nachricht kommt erneut
+        applyTaskbar();
+        return;
+    }
     ITaskbarList3* list = nullptr;
     if (FAILED(CoCreateInstance(CLSID_TaskbarList, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskbarList3,
                                 reinterpret_cast<void**>(&list))) ||
@@ -272,41 +278,110 @@ void setOverallProgress(int permille) {
     if (permille < 0) permille = 0;
     if (permille > 1000) permille = 1000;
     SendMessageW(g.progress, PBM_SETPOS, static_cast<WPARAM>(permille), 0);
-    const int percent = permille / 10;
-    if (percent != g.overallPercent) {
-        g.overallPercent = percent;
-        InvalidateRect(g.progress, nullptr, FALSE);
-    }
+    g.overallPercent = permille / 10;
+    InvalidateRect(g.progress, nullptr, FALSE);
     if (g.taskbarState == TBPF_NORMAL) {
         g.taskbarDone = static_cast<ULONGLONG>(permille);
         if (g.taskbar) g.taskbar->SetProgressValue(g.wnd, g.taskbarDone, 1000);
     }
 }
 
-// Zeichnet nach dem Standard-Paint den Text "Gesamt: N %" mittig in den Balken.
+HTHEME g_progressTheme = nullptr;
+
+void fillRectColor(HDC dc, const RECT& r, int sysColor) {
+    HBRUSH b = GetSysColorBrush(sysColor);
+    FillRect(dc, &r, b);
+}
+
+void drawProgressText(HDC dc, const RECT& textRc, const RECT& clip, COLORREF color, const std::wstring& text) {
+    if (clip.right <= clip.left) return;
+    const int saved = SaveDC(dc);
+    IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom);
+    SetTextColor(dc, color);
+    RECT rc = textRc;
+    DrawTextW(dc, text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    RestoreDC(dc, saved);
+}
+
+// Zeichnet den Balken komplett selbst (doppelt gepuffert), inklusive Text "Gesamt: N %".
+void paintProgress(HWND wnd, HDC target) {
+    RECT rc;
+    GetClientRect(wnd, &rc);
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    if (w <= 0 || h <= 0) return;
+    HDC dc = CreateCompatibleDC(target);
+    HBITMAP bmp = CreateCompatibleBitmap(target, w, h);
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    HGDIOBJ oldFont = SelectObject(dc, g.font);
+    SetBkMode(dc, TRANSPARENT);
+    fillRectColor(dc, rc, COLOR_BTNFACE);
+
+    LRESULT pos = SendMessageW(wnd, PBM_GETPOS, 0, 0);
+    if (pos < 0) pos = 0;
+    if (pos > 1000) pos = 1000;
+    RECT inner = rc;
+    const bool themed = g_progressTheme != nullptr;
+    if (themed) {
+        DrawThemeBackground(g_progressTheme, dc, PP_BAR, 0, &rc, nullptr);
+        GetThemeBackgroundContentRect(g_progressTheme, dc, PP_BAR, 0, &rc, &inner);
+    } else {
+        DrawEdge(dc, &inner, EDGE_SUNKEN, BF_RECT | BF_ADJUST);
+    }
+    RECT filled = inner;
+    filled.right = inner.left + static_cast<LONG>((inner.right - inner.left) * pos / 1000);
+    if (filled.right > filled.left) {
+        if (themed)
+            DrawThemeBackground(g_progressTheme, dc, PP_FILL, PBFS_NORMAL, &filled, nullptr);
+        else
+            fillRectColor(dc, filled, COLOR_HIGHLIGHT);
+    }
+    if (!themed) {
+        RECT rest = inner;
+        rest.left = filled.right;
+        if (rest.right > rest.left) fillRectColor(dc, rest, COLOR_WINDOW);
+    }
+
+    if (g.overallPercent >= 0) {
+        const std::wstring text = L"Gesamt: " + std::to_wstring(g.overallPercent) + L" %";
+        RECT restClip = inner;
+        restClip.left = filled.right;
+        drawProgressText(dc, rc, filled, themed ? RGB(0, 0, 0) : GetSysColor(COLOR_HIGHLIGHTTEXT), text);
+        drawProgressText(dc, rc, restClip, GetSysColor(COLOR_WINDOWTEXT), text);
+    }
+
+    BitBlt(target, 0, 0, w, h, dc, 0, 0, SRCCOPY);
+    SelectObject(dc, oldFont);
+    SelectObject(dc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+}
+
 LRESULT CALLBACK progressSubclass(HWND wnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR) {
     switch (msg) {
-    case WM_PAINT:
-    case WM_PRINTCLIENT: {
-        const LRESULT r = DefSubclassProc(wnd, msg, wp, lp);
-        if (g.overallPercent >= 0) {
-            HDC given = (msg == WM_PRINTCLIENT) ? reinterpret_cast<HDC>(wp) : nullptr;
-            HDC dc = given ? given : GetDC(wnd);
-            if (dc) {
-                RECT rc;
-                GetClientRect(wnd, &rc);
-                const std::wstring text = L"Gesamt: " + std::to_wstring(g.overallPercent) + L" %";
-                HGDIOBJ oldFont = SelectObject(dc, g.font);
-                SetBkMode(dc, TRANSPARENT);
-                SetTextColor(dc, RGB(0, 0, 0));
-                DrawTextW(dc, text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-                SelectObject(dc, oldFont);
-                if (!given) ReleaseDC(wnd, dc);
-            }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        if (wp) {
+            paintProgress(wnd, reinterpret_cast<HDC>(wp));
+        } else {
+            PAINTSTRUCT ps;
+            HDC dc = BeginPaint(wnd, &ps);
+            if (dc) paintProgress(wnd, dc);
+            EndPaint(wnd, &ps);
         }
-        return r;
+        return 0;
     }
+    case WM_PRINTCLIENT:
+        paintProgress(wnd, reinterpret_cast<HDC>(wp));
+        return 0;
+    case WM_THEMECHANGED:
+        if (g_progressTheme) CloseThemeData(g_progressTheme);
+        g_progressTheme = OpenThemeData(wnd, L"PROGRESS");
+        InvalidateRect(wnd, nullptr, FALSE);
+        break;
     case WM_NCDESTROY:
+        if (g_progressTheme) CloseThemeData(g_progressTheme);
+        g_progressTheme = nullptr;
         RemoveWindowSubclass(wnd, progressSubclass, id);
         break;
     }
@@ -504,6 +579,7 @@ void createControls() {
     g.cancelBtn = makeChild(WC_BUTTONW, L"Abbrechen", BS_PUSHBUTTON | WS_TABSTOP, 228, 106, 100, 30, IDC_CANCEL);
 
     g.progress = makeChild(PROGRESS_CLASSW, L"", 0, 12, 148, 456, 22, IDC_PROGRESS);
+    g_progressTheme = OpenThemeData(g.progress, L"PROGRESS");
     SetWindowSubclass(g.progress, progressSubclass, 1, 0);
     SendMessageW(g.progress, PBM_SETRANGE32, 0, 1000);
     g.status = makeChild(WC_STATICW, L"Bereit", SS_LEFT | SS_ENDELLIPSIS, 12, 176, 456, 20, IDC_STATUS);
