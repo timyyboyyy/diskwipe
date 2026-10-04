@@ -163,6 +163,7 @@ void refreshDrives(bool automatic = false) {
         haveSelected = true;
     }
 
+    const bool wasEmpty = g.drives.empty();  // nur dann wird automatisch ausgewählt
     std::vector<DriveInfo> fresh;
     for (const DriveInfo& d : listDrives())
         if (isSelectable(d, includeInternal)) fresh.push_back(d);
@@ -187,15 +188,17 @@ void refreshDrives(bool automatic = false) {
     SendMessageW(g.drive, CB_RESETCONTENT, 0, 0);
     for (const std::string& t : g.driveTexts)
         SendMessageW(g.drive, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(toWide(t).c_str()));
-    if (!g.drives.empty()) {
-        if (haveSelected) {
-            // Nie stillschweigend ein anderes Laufwerk wählen: verschwunden = keine Auswahl.
-            const int keep = findDrive(g.drives, selected);
-            SendMessageW(g.drive, CB_SETCURSEL, keep >= 0 ? keep : -1, 0);
-            if (keep < 0) appendLog(L"Ausgewähltes Laufwerk entfernt – bitte neu auswählen.");
+    if (haveSelected) {
+        // Nie stillschweigend ein anderes Laufwerk wählen: verschwunden = keine Auswahl.
+        const int keep = findDrive(g.drives, selected);
+        if (keep >= 0) {
+            SendMessageW(g.drive, CB_SETCURSEL, keep, 0);
         } else {
-            SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
+            SendMessageW(g.drive, CB_SETCURSEL, -1, 0);
+            appendLog(L"Ausgewähltes Laufwerk entfernt – bitte neu auswählen.");
         }
+    } else if (wasEmpty && !g.drives.empty()) {
+        SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
     }
     setRunning(false);
     if (!automatic)
