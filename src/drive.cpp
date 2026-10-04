@@ -38,10 +38,11 @@ std::string modelOrUnknown(const DriveInfo& d) { return d.model.empty() ? "Unbek
 std::string baseKey(const DriveInfo& d) { return modelOrUnknown(d) + "|" + formatBytes(d.size) + "|" + driveKind(d); }
 
 std::string build(const DriveInfo& d, const std::string& modelSuffix) {
-    std::string s = "Disk " + std::to_string(d.number) + " – " + modelOrUnknown(d) + modelSuffix + " – " +
-                    formatBytes(d.size) + " – " + driveKind(d);
-    for (size_t i = 0; i < d.volumes.size(); ++i) s += (i == 0 ? " – " : ", ") + d.volumes[i];
-    return s;
+    std::string vols;
+    for (size_t i = 0; i < d.volumes.size(); ++i) vols += (i == 0 ? "" : ", ") + d.volumes[i];
+    if (vols.empty()) vols = "-";
+    return "Disk " + std::to_string(d.number) + " – " + vols + " – " + formatBytes(d.size) + " – " + modelOrUnknown(d) +
+           modelSuffix + " – " + driveKind(d);
 }
 
 }  // namespace

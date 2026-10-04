@@ -3,6 +3,7 @@
 // Ziel Windows 10/11; MinGW deklariert sonst ITaskbarList3/ChangeWindowMessageFilterEx nicht.
 #define _WIN32_WINNT 0x0A00
 #endif
+#include <algorithm>
 #include <windows.h>
 #include <commctrl.h>
 #include <dbt.h>
@@ -44,6 +45,11 @@ constexpr int kMaxRandomPasses = 10;
 // GUID_DEVINTERFACE_DISK
 const GUID kDiskInterfaceGuid = {0x53f56307, 0xb6bf, 0x11d0, {0x94, 0xf2, 0x00, 0xa0, 0xc9, 0x1e, 0xfb, 0x8b}};
 const wchar_t* const kConfirmWord = L"LÖSCHEN";
+
+struct ConfirmInfo {
+    std::string text;                  // Combobox-Text des gewählten Eintrags
+    std::vector<std::string> volumes;  // Volumes des Laufwerks
+};
 
 struct App {
     HINSTANCE inst = nullptr;
@@ -200,6 +206,26 @@ void refreshDrives(bool automatic = false) {
     } else if (wasEmpty && !g.drives.empty()) {
         SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
     }
+    // Aufgeklappte Liste mindestens so breit wie der breiteste Eintrag.
+    {
+        RECT rc;
+        GetWindowRect(g.drive, &rc);
+        int width = rc.right - rc.left;
+        HDC dc = GetDC(g.drive);
+        if (dc) {
+            HGDIOBJ old = SelectObject(dc, reinterpret_cast<HGDIOBJ>(SendMessageW(g.drive, WM_GETFONT, 0, 0)));
+            int widest = 0;
+            for (const std::string& t : g.driveTexts) {
+                const std::wstring w = toWide(t);
+                SIZE sz = {};
+                if (GetTextExtentPoint32W(dc, w.c_str(), static_cast<int>(w.size()), &sz)) widest = std::max<int>(widest, sz.cx);
+            }
+            SelectObject(dc, old);
+            ReleaseDC(g.drive, dc);
+            width = std::max(width, widest + 2 * GetSystemMetrics(SM_CXEDGE) + GetSystemMetrics(SM_CXVSCROLL) + 8);
+        }
+        SendMessageW(g.drive, CB_SETDROPPEDWIDTH, static_cast<WPARAM>(width), 0);
+    }
     setRunning(false);
     if (!automatic)
         appendLog(g.drives.empty() ? L"Kein passendes Laufwerk gefunden."
@@ -226,12 +252,17 @@ HICON loadAppIcon(int cx, int cy) {
 INT_PTR CALLBACK confirmProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_INITDIALOG: {
-        const auto* driveText = reinterpret_cast<const std::string*>(lp);
+        const auto* info = reinterpret_cast<const ConfirmInfo*>(lp);
         SetWindowTextW(dlg, L"Löschen bestätigen");
         SendMessageW(dlg, WM_SETICON, ICON_SMALL,
                      reinterpret_cast<LPARAM>(loadAppIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON))));
+        std::wstring partitions;
+        for (size_t i = 0; i < info->volumes.size(); ++i) partitions += (i == 0 ? L"" : L", ") + toWide(info->volumes[i]);
+        partitions = partitions.empty() ? L"Alle Partitionen auf diesem Laufwerk werden gelöscht (keine mit Laufwerksbuchstaben)."
+                                        : L"Alle Partitionen auf diesem Laufwerk werden gelöscht: " + partitions;
         const std::wstring text = L"ALLE Daten auf diesem Laufwerk werden unwiederbringlich überschrieben:\r\n\r\n" +
-                                  toWide(*driveText) + L"\r\n\r\nZur Bestätigung LÖSCHEN eintippen:";
+                                  toWide(info->text) + L"\r\n\r\n" + partitions +
+                                  L"\r\n\r\nZur Bestätigung LÖSCHEN eintippen:";
         SetDlgItemTextW(dlg, IDC_CONFIRM_TEXT, text.c_str());
         SetDlgItemTextW(dlg, IDOK, L"Löschen");
         SetDlgItemTextW(dlg, IDCANCEL, L"Abbrechen");
@@ -438,6 +469,7 @@ void startOperation(bool wipe) {
     if (sel == CB_ERR || sel >= static_cast<LRESULT>(g.drives.size())) return;
     const DriveInfo drive = g.drives[static_cast<size_t>(sel)];
     const std::string driveText = g.driveTexts[static_cast<size_t>(sel)];
+    const ConfirmInfo confirmInfo{driveText, drive.volumes};
     int randomPasses = static_cast<int>(SendMessageW(g.spin, UDM_GETPOS32, 0, 0));
     if (randomPasses < 0) randomPasses = 0;
     if (randomPasses > kMaxRandomPasses) randomPasses = kMaxRandomPasses;
@@ -447,7 +479,7 @@ void startOperation(bool wipe) {
         {
             ModalGuard guard;
             confirmed = DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
-                                        reinterpret_cast<LPARAM>(&driveText));
+                                        reinterpret_cast<LPARAM>(&confirmInfo));
         }
         if (confirmed != IDOK) {
             appendLog(L"Löschen nicht bestätigt.");
