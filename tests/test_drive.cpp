@@ -61,3 +61,45 @@ TEST(tiny_drive_is_not_selectable) {
     CHECK(!isSelectable(drive(true, true, false, 1024), true));
     CHECK(isSelectable(drive(true, false, false, kBlockSize), false));
 }
+
+TEST(describe_drive_lists_volumes) {
+    DriveInfo d = drive(true, false, false, 15728640000ULL);
+    d.number = 3;
+    d.model = "VendorCo ProductCode";
+    d.volumes = {"E: (MEINSTICK)", "F:"};
+    CHECK_EQ(describeDrive(d), std::string("Disk 3 – VendorCo ProductCode – 14,6 GB – USB – E: (MEINSTICK), F:"));
+}
+
+namespace {
+DriveInfo stick(int number, const std::string& serial) {
+    DriveInfo d = drive(true, false, false, 15728640000ULL);
+    d.number = number;
+    d.model = "VendorCo ProductCode";
+    d.serial = serial;
+    return d;
+}
+}  // namespace
+
+TEST(describe_drives_marks_duplicates_with_serial) {
+    DriveInfo other = drive(true, false, false, 8ULL << 30);
+    other.number = 4;
+    other.model = "Other";
+    other.serial = "CCCC3333";
+    const auto r = describeDrives({stick(1, "AAAA1111"), stick(2, "BBBB2222"), other});
+    CHECK_EQ(r.size(), size_t(3));
+    CHECK_EQ(r[0], std::string("Disk 1 – VendorCo ProductCode [SN …1111] – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – VendorCo ProductCode [SN …2222] – 14,6 GB – USB"));
+    CHECK_EQ(r[2], std::string("Disk 4 – Other – 8,0 GB – USB"));
+}
+
+TEST(describe_drives_identical_serials_no_suffix) {
+    const auto r = describeDrives({stick(1, "SAME0000"), stick(2, "SAME0000")});
+    CHECK_EQ(r[0], std::string("Disk 1 – VendorCo ProductCode – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – VendorCo ProductCode – 14,6 GB – USB"));
+}
+
+TEST(describe_drives_empty_serial_no_suffix) {
+    const auto r = describeDrives({stick(1, ""), stick(2, "BBBB2222")});
+    CHECK_EQ(r[0], std::string("Disk 1 – VendorCo ProductCode – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – VendorCo ProductCode [SN …2222] – 14,6 GB – USB"));
+}

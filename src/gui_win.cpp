@@ -41,6 +41,7 @@ struct App {
     HFONT font = nullptr;
     int dpi = 96;
     std::vector<DriveInfo> drives;
+    std::vector<std::string> driveTexts;  // Beschreibung je Eintrag, identisch mit Combobox
     std::thread worker;
     std::atomic<bool> cancel{false};
     bool running = false;
@@ -116,11 +117,11 @@ void refreshDrives() {
     const bool includeInternal = SendMessageW(g.internal, BM_GETCHECK, 0, 0) == BST_CHECKED;
     g.drives.clear();
     SendMessageW(g.drive, CB_RESETCONTENT, 0, 0);
-    for (const DriveInfo& d : listDrives()) {
-        if (!isSelectable(d, includeInternal)) continue;
-        g.drives.push_back(d);
-        SendMessageW(g.drive, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(toWide(describeDrive(d)).c_str()));
-    }
+    for (const DriveInfo& d : listDrives())
+        if (isSelectable(d, includeInternal)) g.drives.push_back(d);
+    g.driveTexts = describeDrives(g.drives);
+    for (const std::string& t : g.driveTexts)
+        SendMessageW(g.drive, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(toWide(t).c_str()));
     if (!g.drives.empty()) SendMessageW(g.drive, CB_SETCURSEL, 0, 0);
     setRunning(false);
     appendLog(g.drives.empty() ? L"Kein passendes Laufwerk gefunden."
@@ -136,10 +137,10 @@ bool confirmTextMatches(HWND dlg) {
 INT_PTR CALLBACK confirmProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_INITDIALOG: {
-        const auto* d = reinterpret_cast<const DriveInfo*>(lp);
+        const auto* driveText = reinterpret_cast<const std::string*>(lp);
         SetWindowTextW(dlg, L"Löschen bestätigen");
         const std::wstring text = L"ALLE Daten auf diesem Laufwerk werden unwiederbringlich überschrieben:\r\n\r\n" +
-                                  toWide(describeDrive(*d)) + L"\r\n\r\nZur Bestätigung LÖSCHEN eintippen:";
+                                  toWide(*driveText) + L"\r\n\r\nZur Bestätigung LÖSCHEN eintippen:";
         SetDlgItemTextW(dlg, IDC_CONFIRM_TEXT, text.c_str());
         SetDlgItemTextW(dlg, IDOK, L"Löschen");
         SetDlgItemTextW(dlg, IDCANCEL, L"Abbrechen");
@@ -191,12 +192,13 @@ void startOperation(bool wipe) {
     const LRESULT sel = SendMessageW(g.drive, CB_GETCURSEL, 0, 0);
     if (sel == CB_ERR || sel >= static_cast<LRESULT>(g.drives.size())) return;
     const DriveInfo drive = g.drives[static_cast<size_t>(sel)];
+    const std::string driveText = g.driveTexts[static_cast<size_t>(sel)];
     int randomPasses = static_cast<int>(SendMessageW(g.spin, UDM_GETPOS32, 0, 0));
     if (randomPasses < 0) randomPasses = 0;
     if (randomPasses > kMaxRandomPasses) randomPasses = kMaxRandomPasses;
 
     if (wipe && DialogBoxParamW(g.inst, MAKEINTRESOURCEW(IDD_CONFIRM), g.wnd, confirmProc,
-                                reinterpret_cast<LPARAM>(&drive)) != IDOK) {
+                                reinterpret_cast<LPARAM>(&driveText)) != IDOK) {
         appendLog(L"Löschen nicht bestätigt.");
         return;
     }
@@ -209,7 +211,7 @@ void startOperation(bool wipe) {
     SendMessageW(g.progress, PBM_SETPOS, 0, 0);
     setResult(L"", RGB(0, 0, 0));
     SetWindowTextW(g.status, L"Laufwerk wird geöffnet …");
-    appendLog((wipe ? L"Löschen gestartet: " : L"Prüfung gestartet: ") + toWide(describeDrive(drive)) +
+    appendLog((wipe ? L"Löschen gestartet: " : L"Prüfung gestartet: ") + toWide(driveText) +
               (wipe ? L" (" + std::to_wstring(randomPasses) + L"× Zufall + 1× Nullen)" : L""));
     setRunning(true);
 

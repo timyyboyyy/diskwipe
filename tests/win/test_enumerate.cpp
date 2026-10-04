@@ -41,3 +41,12 @@ TEST(win_system_disk_never_selectable) {
     for (const DriveInfo& d : listDrives())
         if (d.system) CHECK(!isSelectable(d, true));
 }
+
+TEST(win_volumes_have_drive_letter_format) {
+    for (const DriveInfo& d : listDrives())
+        for (const std::string& v : d.volumes) {
+            CHECK(v.size() >= 2);
+            CHECK(v[0] >= 'A' && v[0] <= 'Z');
+            CHECK(v[1] == ':');
+        }
+}
