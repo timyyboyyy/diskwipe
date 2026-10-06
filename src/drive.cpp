@@ -28,9 +28,9 @@ std::string formatBytes(uint64_t bytes) {
     return s;
 }
 
-namespace {
-
 const char* driveKind(const DriveInfo& d) { return d.usb ? "USB" : d.removable ? "Wechseldatenträger" : "Intern"; }
+
+namespace {
 
 std::string modelOrUnknown(const DriveInfo& d) { return d.model.empty() ? "Unbekannt" : d.model; }
 
@@ -63,6 +63,18 @@ std::vector<std::string> describeDrives(const std::vector<DriveInfo>& drives) {
         out.push_back(build(d, suffix));
     }
     return out;
+}
+
+bool sameIdentity(const DriveInfo& a, const DriveInfo& b) {
+    return !a.serial.empty() && a.serial == b.serial && a.model == b.model && a.size == b.size && a.usb == b.usb &&
+           a.removable == b.removable;
+}
+
+std::vector<size_t> findByIdentity(const std::vector<DriveInfo>& list, const DriveInfo& id) {
+    std::vector<size_t> hits;
+    for (size_t i = 0; i < list.size(); ++i)
+        if (!list[i].system && sameIdentity(list[i], id)) hits.push_back(i);
+    return hits;
 }
 
 }  // namespace dw
