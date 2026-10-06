@@ -77,13 +77,10 @@ TEST(describe_drive_lists_volumes) {
 
 namespace {
 DriveInfo stick(int number, const std::string& serial) {
-    DriveInfo d;
+    DriveInfo d = drive(true, false, false, 15728640000ULL);
     d.number = number;
-    d.model = "Intenso Rainbow";
+    d.model = "VendorCo ProductCode";
     d.serial = serial;
-    d.size = 15728640000ULL;
-    d.usb = true;
-    d.removable = true;
     return d;
 }
 }  // namespace
@@ -95,68 +92,84 @@ TEST(describe_drives_marks_duplicates_with_serial) {
     other.serial = "CCCC3333";
     const auto r = describeDrives({stick(1, "AAAA1111"), stick(2, "BBBB2222"), other});
     CHECK_EQ(r.size(), size_t(3));
-    CHECK_EQ(r[0], std::string("Disk 1 – - – Intenso Rainbow [SN …1111] – 14,6 GB – USB"));
-    CHECK_EQ(r[1], std::string("Disk 2 – - – Intenso Rainbow [SN …2222] – 14,6 GB – USB"));
+    CHECK_EQ(r[0], std::string("Disk 1 – - – VendorCo ProductCode [SN …1111] – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – - – VendorCo ProductCode [SN …2222] – 14,6 GB – USB"));
     CHECK_EQ(r[2], std::string("Disk 4 – - – Other – 8,0 GB – USB"));
 }
 
 TEST(describe_drives_identical_serials_no_suffix) {
     const auto r = describeDrives({stick(1, "SAME0000"), stick(2, "SAME0000")});
-    CHECK_EQ(r[0], std::string("Disk 1 – - – Intenso Rainbow – 14,6 GB – USB"));
-    CHECK_EQ(r[1], std::string("Disk 2 – - – Intenso Rainbow – 14,6 GB – USB"));
+    CHECK_EQ(r[0], std::string("Disk 1 – - – VendorCo ProductCode – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – - – VendorCo ProductCode – 14,6 GB – USB"));
 }
 
 TEST(describe_drives_empty_serial_no_suffix) {
     const auto r = describeDrives({stick(1, ""), stick(2, "BBBB2222")});
-    CHECK_EQ(r[0], std::string("Disk 1 – - – Intenso Rainbow – 14,6 GB – USB"));
-    CHECK_EQ(r[1], std::string("Disk 2 – - – Intenso Rainbow [SN …2222] – 14,6 GB – USB"));
+    CHECK_EQ(r[0], std::string("Disk 1 – - – VendorCo ProductCode – 14,6 GB – USB"));
+    CHECK_EQ(r[1], std::string("Disk 2 – - – VendorCo ProductCode [SN …2222] – 14,6 GB – USB"));
 }
 
+namespace {
+DriveInfo identityStick(int number, const std::string& serial) {
+    DriveInfo d;
+    d.number = number;
+    d.model = "Intenso Rainbow";
+    d.serial = serial;
+    d.size = 15728640000ULL;
+    d.usb = true;
+    d.removable = true;
+    return d;
+}
+}  // namespace
+
 TEST(identity_ignores_disk_number) {
-    const std::vector<DriveInfo> list = {stick(4, "AA001234")};
-    const auto hits = findByIdentity(list, stick(3, "AA001234"));
+    const std::vector<DriveInfo> list = {identityStick(4, "AA001234")};
+    const auto hits = findByIdentity(list, identityStick(3, "AA001234"));
     CHECK_EQ(hits.size(), size_t(1));
     CHECK_EQ(hits[0], size_t(0));
 }
 
 TEST(identity_distinguishes_twin_sticks_by_serial) {
-    const std::vector<DriveInfo> list = {stick(4, "AA001234"), stick(5, "AA009999")};
-    const auto hits = findByIdentity(list, stick(3, "AA009999"));
+    const std::vector<DriveInfo> list = {identityStick(4, "AA001234"), identityStick(5, "AA009999")};
+    const auto hits = findByIdentity(list, identityStick(3, "AA009999"));
     CHECK_EQ(hits.size(), size_t(1));
     CHECK_EQ(hits[0], size_t(1));
 }
 
 TEST(identity_with_duplicate_serial_is_ambiguous) {
-    const std::vector<DriveInfo> list = {stick(4, "0000"), stick(5, "0000")};
-    CHECK_EQ(findByIdentity(list, stick(3, "0000")).size(), size_t(2));
+    const std::vector<DriveInfo> list = {identityStick(4, "0000"), identityStick(5, "0000")};
+    CHECK_EQ(findByIdentity(list, identityStick(3, "0000")).size(), size_t(2));
 }
 
 TEST(identity_without_serial_never_matches) {
-    const std::vector<DriveInfo> list = {stick(4, "")};
-    CHECK(findByIdentity(list, stick(3, "")).empty());
-    CHECK(!sameIdentity(stick(3, ""), stick(3, "")));
+    const std::vector<DriveInfo> list = {identityStick(4, "")};
+    CHECK(findByIdentity(list, identityStick(3, "")).empty());
+    CHECK(!sameIdentity(identityStick(3, ""), identityStick(3, "")));
 }
 
 TEST(identity_requires_same_model_size_and_bus) {
-    DriveInfo other = stick(4, "AA001234");
+    DriveInfo other = identityStick(4, "AA001234");
     other.size += 512;
-    CHECK(!sameIdentity(other, stick(3, "AA001234")));
-    other = stick(4, "AA001234");
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
     other.model = "Andere";
-    CHECK(!sameIdentity(other, stick(3, "AA001234")));
-    other = stick(4, "AA001234");
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
     other.usb = false;
-    CHECK(!sameIdentity(other, stick(3, "AA001234")));
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
+    other.removable = false;
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
 }
 
 TEST(identity_never_matches_system_disk) {
-    DriveInfo sys = stick(0, "AA001234");
+    DriveInfo sys = identityStick(0, "AA001234");
     sys.system = true;
-    CHECK(findByIdentity({sys}, stick(3, "AA001234")).empty());
+    CHECK(findByIdentity({sys}, identityStick(3, "AA001234")).empty());
 }
 
 TEST(drive_kind_names) {
-    DriveInfo d = stick(1, "x");
+    DriveInfo d = identityStick(1, "x");
     CHECK_EQ(std::string(driveKind(d)), std::string("USB"));
     d.usb = false;
     CHECK_EQ(std::string(driveKind(d)), std::string("Wechseldatenträger"));
