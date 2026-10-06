@@ -41,7 +41,7 @@ std::string passLabel(int pass, int total) { return "Durchgang " + std::to_strin
 }  // namespace
 
 std::string formatLogLine(const std::tm& t, const std::string& text) {
-    char stamp[32];
+    char stamp[64];  // Platz für beliebige int-Werte (sonst -Wformat-truncation)
     std::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d:%02d  ", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
                   t.tm_hour, t.tm_min, t.tm_sec);
     return stamp + text + "\r\n";
@@ -59,7 +59,7 @@ std::string driveLogText(const DriveInfo& d) {
 }
 
 std::string suggestLogName(const std::tm& t, const DriveInfo& d) {
-    char stamp[32];
+    char stamp[64];  // Platz für beliebige int-Werte (sonst -Wformat-truncation)
     std::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d_%02d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
                   t.tm_min, t.tm_sec);
     std::string model = d.model.empty() ? "Unbekannt" : d.model;
