@@ -1,3 +1,4 @@
+#pragma code_page(65001)  // Datei ist UTF-8 (Umlaute in der Versionsinfo)
 #include <windows.h>
 #include "resource.h"
 #include "version.h"
@@ -28,7 +29,7 @@ BEGIN
         BLOCK "040704B0"
         BEGIN
             VALUE "CompanyName", "timyyboyyy"
-            VALUE "FileDescription", "diskwipe - Datentraeger sicher loeschen"
+            VALUE "FileDescription", "diskwipe - Datenträger sicher löschen"
             VALUE "FileVersion", DW_VERSION_STR
             VALUE "OriginalFilename", "diskwipe.exe"
             VALUE "ProductName", "diskwipe"
