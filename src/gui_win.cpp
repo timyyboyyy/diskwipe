@@ -38,7 +38,7 @@ namespace {
 
 enum : int {
     IDC_DRIVE = 101, IDC_REFRESH, IDC_INTERNAL, IDC_PASSES, IDC_SPIN,
-    IDC_WIPE, IDC_VERIFY, IDC_CANCEL, IDC_PROGRESS, IDC_STATUS, IDC_RESULT, IDC_LOG, IDC_RESUME,
+    IDC_WIPE, IDC_VERIFY, IDC_CANCEL, IDC_PROGRESS, IDC_STATUS, IDC_RESULT, IDC_LOG, IDC_RESUME, IDC_SAVELOG,
 };
 constexpr UINT WM_APP_PROGRESS = WM_APP + 1;
 constexpr UINT WM_APP_DONE = WM_APP + 2;
@@ -67,7 +67,7 @@ struct PendingResume {
 struct App {
     HINSTANCE inst = nullptr;
     HWND wnd = nullptr, drive = nullptr, refresh = nullptr, internal = nullptr, passes = nullptr, spin = nullptr;
-    HWND wipeBtn = nullptr, verifyBtn = nullptr, cancelBtn = nullptr, resumeBtn = nullptr, progress = nullptr, status = nullptr;
+    HWND wipeBtn = nullptr, verifyBtn = nullptr, cancelBtn = nullptr, resumeBtn = nullptr, saveLogBtn = nullptr, progress = nullptr, status = nullptr;
     HWND result = nullptr, log = nullptr;
     HFONT font = nullptr;
     int dpi = 96;
@@ -98,6 +98,8 @@ struct App {
     double startUnits = 0;          // Fortschritt beim Start (für MB/s nach dem Fortsetzen)
     PendingResume pending;
     int interruptions = 0;          // Unterbrechungen des aktuellen Vorgangs (für die Ergebniszeile)
+    bool haveLog = false;           // Protokoll des letzten Vorgangs liegt in %TEMP% (offen oder abgeschlossen)
+    size_t savedLines = 0;          // Zeilenstand beim letzten Speichern; abweichend = nicht gespeichert
 };
 App g;
 
@@ -153,9 +155,48 @@ void setResult(const std::wstring& text, COLORREF color) {
     InvalidateRect(g.result, nullptr, TRUE);
 }
 
+// Schreibt eine Zeile, falls gerade ein Protokoll offen ist (laufender oder unterbrochener Vorgang).
+void auditLine(const std::string& text) {
+    if (g.audit.isOpen()) g.audit.line(text);
+}
+
+// Proc-Adresse ohne -Wcast-function-type-Warnung umwandeln.
+template <typename Fn>
+Fn procAddress(const wchar_t* module, const char* name) {
+    HMODULE m = GetModuleHandleW(module);
+    return m ? reinterpret_cast<Fn>(reinterpret_cast<void (*)()>(GetProcAddress(m, name))) : nullptr;
+}
+
+std::string systemInfoText() {
+    using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOW*);
+    std::string version = "Windows (Version nicht ermittelbar)";
+    OSVERSIONINFOW vi = {};
+    vi.dwOSVersionInfoSize = sizeof(vi);
+    if (const auto rtlGetVersion = procAddress<RtlGetVersionFn>(L"ntdll.dll", "RtlGetVersion"))
+        if (rtlGetVersion(&vi) == 0)
+            version = "Windows " + std::to_string(vi.dwMajorVersion) + "." + std::to_string(vi.dwMinorVersion) + " Build " +
+                      std::to_string(vi.dwBuildNumber);
+    wchar_t computer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD computerLen = MAX_COMPUTERNAME_LENGTH + 1;
+    if (!GetComputerNameW(computer, &computerLen)) computer[0] = L'\0';
+    wchar_t user[256] = {};
+    DWORD userLen = 256;
+    if (!GetUserNameW(user, &userLen)) user[0] = L'\0';
+    return "System: " + version + ", Rechner " + (computer[0] ? toUtf8(computer) : std::string("?")) + ", Benutzer " +
+           (user[0] ? toUtf8(user) : std::string("?")) + ", Administratorrechte " + (isProcessElevated() ? "ja" : "nein");
+}
+
+// Schließt ein vorheriges Protokoll und löscht dessen Temp-Datei (gespeichert oder bewusst verworfen).
+void discardLog() {
+    g.audit.close();
+    if (g.haveLog && !g.audit.path().empty()) DeleteFileW(toWide(g.audit.path()).c_str());
+    g.haveLog = false;
+    g.savedLines = 0;
+}
+
 void startAudit(bool wipe, const DriveInfo& drive, int randomPasses) {
     static int counter = 0;
-    g.audit.close();
+    discardLog();
     const std::tm t = localNow();
     wchar_t dir[MAX_PATH + 1] = {};
     const DWORD len = GetTempPathW(MAX_PATH + 1, dir);
@@ -172,20 +213,58 @@ void startAudit(bool wipe, const DriveInfo& drive, int randomPasses) {
         appendLog(L"Warnung: Protokolldatei kann nicht angelegt werden: " + path);
         return;
     }
+    g.haveLog = true;
     g.audit.line("diskwipe " DW_VERSION_STR " – Protokoll");
-    g.audit.line(wipe ? "Vorgang: Löschen, " + std::to_string(randomPasses) + "× Zufall + 1× Nullen"
+    g.audit.line(systemInfoText());
+    g.audit.line(wipe ? "Vorgang: Löschen, " + std::to_string(randomPasses) + "× Zufall + 1× Nullen, jeder Durchgang wird "
+                                                                               "vollständig zurückgelesen"
                       : std::string("Vorgang: Prüfen (alle Bytes = 0x00)"));
-    g.audit.line("Laufwerk: " + driveLogText(drive));
+    g.audit.line("Laufwerk: " + driveLogText(drive) + ", Wechselmedium " + (drive.removable ? "ja" : "nein"));
+    std::string volumes;
+    for (const std::string& v : drive.volumes) volumes += (volumes.empty() ? "" : ", ") + v;
+    g.audit.line("Volumes mit Laufwerksbuchstaben: " + (volumes.empty() ? std::string("keine") : volumes));
 }
 
-// Schließt das Protokoll mit dem Ergebnis ab und bietet "Speichern unter" an.
+// Schließt das Protokoll mit dem Ergebnis ab; gespeichert wird über den Button "Protokoll speichern".
 void finishAudit(const std::string& outcome) {
     if (!g.audit.isOpen()) return;
     g.audit.line("Ergebnis: " + outcome);
     if (g.audit.failed()) appendLog(L"Warnung: Protokoll unvollständig – nicht alle Zeilen konnten geschrieben werden.");
     g.audit.close();
-    const std::wstring temp = toWide(g.audit.path());
+    appendLog(L"Protokoll bereit – mit „Protokoll speichern“ sichern.");
+}
 
+// Kopiert auch eine noch geöffnete Protokolldatei (unterbrochener Vorgang). 0 = Erfolg, sonst Windows-Fehlercode.
+DWORD copyLogFile(const std::wstring& from, const std::wstring& to) {
+    HANDLE src = CreateFileW(from.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                             OPEN_EXISTING, 0, nullptr);
+    if (src == INVALID_HANDLE_VALUE) return GetLastError();
+    HANDLE dst = CreateFileW(to.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (dst == INVALID_HANDLE_VALUE) {
+        const DWORD e = GetLastError();
+        CloseHandle(src);
+        return e;
+    }
+    DWORD error = 0;
+    char buf[64 * 1024];
+    DWORD got = 0;
+    while (ReadFile(src, buf, sizeof(buf), &got, nullptr) && got > 0) {
+        DWORD written = 0;
+        if (!WriteFile(dst, buf, got, &written, nullptr) || written != got) {
+            error = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
+            break;
+        }
+    }
+    if (!error && !FlushFileBuffers(dst)) error = GetLastError();
+    CloseHandle(dst);
+    CloseHandle(src);
+    return error;
+}
+
+// "Speichern unter" für das aktuelle Protokoll. true = gespeichert.
+bool saveLog() {
+    if (!g.haveLog) return false;
+    const std::wstring temp = toWide(g.audit.path());
     std::wstring docs;
     PWSTR known = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &known)) && known) docs = known;
@@ -208,17 +287,32 @@ void finishAudit(const std::string& outcome) {
         ModalGuard guard;
         chosen = GetSaveFileNameW(&ofn);
     }
-    if (chosen && CopyFileW(temp.c_str(), file, FALSE)) {
-        DeleteFileW(temp.c_str());
-        appendLog(L"Protokoll gespeichert: " + std::wstring(file));
-        return;
-    }
-    if (chosen) {
-        const std::wstring err = toWide(winErrorText(GetLastError()));
+    if (!chosen) return false;
+    const size_t lines = g.audit.lines();
+    const DWORD error = copyLogFile(temp, file);
+    if (error) {
+        const std::wstring err = toWide(winErrorText(error));
         ModalGuard guard;
         MessageBoxW(g.wnd, (L"Protokoll konnte nicht gespeichert werden: " + err).c_str(), L"diskwipe", MB_ICONERROR);
+        return false;
     }
-    appendLog(L"Protokoll liegt unter: " + temp);
+    g.savedLines = lines;
+    appendLog(L"Protokoll gespeichert: " + std::wstring(file) + (g.audit.isOpen() ? L" (Zwischenstand)" : L""));
+    return true;
+}
+
+// Vor neuem Lauf/Beenden: nicht gespeichertes Protokoll anbieten. false = Vorgang nicht fortsetzen.
+bool offerSaveLog(bool allowCancel) {
+    if (!g.haveLog || g.audit.lines() == g.savedLines) return true;
+    int answer;
+    {
+        ModalGuard guard;
+        answer = MessageBoxW(g.wnd, L"Das Protokoll wurde nicht gespeichert. Jetzt speichern?", L"diskwipe",
+                             (allowCancel ? MB_YESNOCANCEL : MB_YESNO) | MB_ICONQUESTION);
+    }
+    if (answer == IDCANCEL) return false;
+    if (answer == IDYES && !saveLog()) return !allowCancel;  // Speichern abgebrochen: stehen bleiben, wenn möglich
+    return true;
 }
 
 void setRunning(bool running) {
@@ -233,6 +327,7 @@ void setRunning(bool running) {
     EnableWindow(g.verifyBtn, !running && haveDrive);
     EnableWindow(g.cancelBtn, running || g.pending.active);
     EnableWindow(g.resumeBtn, !running && g.pending.active && g.pending.available);
+    EnableWindow(g.saveLogBtn, !running && g.haveLog);
 }
 
 bool sameDrive(const DriveInfo& a, const DriveInfo& b) {
@@ -268,9 +363,15 @@ void refreshDrives(bool automatic = false) {
 
     if (automatic) {
         for (size_t i = 0; i < fresh.size(); ++i)
-            if (findDrive(g.drives, fresh[i]) < 0) appendLog(L"Laufwerk angeschlossen: " + toWide(freshTexts[i]));
+            if (findDrive(g.drives, fresh[i]) < 0) {
+                appendLog(L"Laufwerk angeschlossen: " + toWide(freshTexts[i]));
+                auditLine("Laufwerk angeschlossen: " + freshTexts[i]);
+            }
         for (size_t i = 0; i < g.drives.size(); ++i)
-            if (findDrive(fresh, g.drives[i]) < 0) appendLog(L"Laufwerk entfernt: " + toWide(g.driveTexts[i]));
+            if (findDrive(fresh, g.drives[i]) < 0) {
+                appendLog(L"Laufwerk entfernt: " + toWide(g.driveTexts[i]));
+                auditLine("Laufwerk entfernt: " + g.driveTexts[i]);
+            }
         bool identical = freshTexts == g.driveTexts && fresh.size() == g.drives.size();
         for (size_t i = 0; identical && i < fresh.size(); ++i) identical = sameDrive(fresh[i], g.drives[i]);
         if (identical) {  // unverändert: Combobox nicht anfassen (Dropdown bleibt offen)
@@ -659,12 +760,17 @@ void launchWorker(const DriveInfo& drive, std::shared_ptr<BlockDevice> dev, bool
             result.reset(new Result());
             std::string err;
             std::shared_ptr<BlockDevice> device = std::move(dev);
-            if (!device) device = WinPhysicalDevice::open(drive, err);
+            if (!device) device = WinPhysicalDevice::open(drive, err, [](const std::string& l) { g.audit.line(l); });
             if (!device) {
                 result->status = Status::IoError;
                 result->message = err;
             } else {
-                const ProgressFn report = [](const Progress& p) {
+                RunLogger runLog;  // nur in diesem Thread benutzt
+                const Clock::time_point t0 = Clock::now();
+                const auto seconds = [t0] { return std::chrono::duration<double>(Clock::now() - t0).count(); };
+                const ProgressFn report = [&runLog, &seconds](const Progress& p) {
+                    const std::string line = runLog.onProgress(p, seconds());
+                    if (!line.empty()) g.audit.line(line);
                     {
                         std::lock_guard<std::mutex> lock(g.progressMutex);
                         g.lastProgress = p;
@@ -675,7 +781,9 @@ void launchWorker(const DriveInfo& drive, std::shared_ptr<BlockDevice> dev, bool
                         PostMessageW(g.wnd, WM_APP_PROGRESS, 0, 0);
                     }
                 };
-                const EventFn events = [](const Event& e) { g.audit.line(eventText(e)); };
+                const EventFn events = [&runLog, &seconds](const Event& e) {
+                    for (const std::string& line : runLog.onEvent(e, seconds())) g.audit.line(line);
+                };
                 RunOptions opts;
                 opts.start = start;
                 opts.events = events;
@@ -705,6 +813,10 @@ void launchWorker(const DriveInfo& drive, std::shared_ptr<BlockDevice> dev, bool
 
 void startOperation(bool wipe) {
     if (g.pending.active && !confirmDiscard()) return;
+    if (!offerSaveLog(true)) {
+        flushPendingRefresh();
+        return;
+    }
     const LRESULT sel = SendMessageW(g.drive, CB_GETCURSEL, 0, 0);
     if (sel == CB_ERR || sel >= static_cast<LRESULT>(g.drives.size())) return;
     const DriveInfo drive = g.drives[static_cast<size_t>(sel)];
@@ -763,7 +875,7 @@ void resumeOperation() {
     SetWindowTextW(g.status, L"Laufwerk wird geöffnet und geprüft …");
     const HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     std::string err;
-    std::unique_ptr<WinPhysicalDevice> dev = WinPhysicalDevice::open(drive, err);
+    std::unique_ptr<WinPhysicalDevice> dev = WinPhysicalDevice::open(drive, err, [](const std::string& l) { g.audit.line(l); });
     ContentCheck check = ContentCheck::ReadError;
     if (dev) check = checkResumeContent(*dev, g.pending.plan, g.pending.point, err);
     SetCursor(oldCursor);
@@ -861,6 +973,9 @@ void onDone(Result* raw) {
                 outcome = L"Prüfung fehlgeschlagen in Durchgang " + std::to_wstring(p.pass) + L": " + std::to_wstring(p.mismatches) +
                           L" abweichende Bytes, erste bei Offset " + std::to_wstring(p.firstMismatch) +
                           L" (Prüfung durch Lesefehler unterbrochen: " + toWide(r->message) + L")";
+                const std::wstring data = L"Daten ab Offset " + std::to_wstring(p.firstMismatch) + L": " + hexExcerpt(p.excerpt);
+                appendLog(data);
+                g.audit.line(toUtf8(data));
             } else {
                 outcome = L"Fehler: " + toWide(r->message);
             }
@@ -889,6 +1004,7 @@ void onDone(Result* raw) {
     setRunning(false);  // Abbrechen/Fortsetzen passend zum neuen Stand
 
     if (g.closing) {
+        offerSaveLog(false);
         DestroyWindow(g.wnd);
         return;
     }
@@ -937,6 +1053,7 @@ void createControls() {
     g.result = makeChild(WC_STATICW, L"", SS_LEFT, 12, 198, 456, 36, IDC_RESULT);
     g.log = makeChild(WC_EDITW, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL, 12, 238, 456, 118, IDC_LOG,
                       WS_EX_CLIENTEDGE);
+    g.saveLogBtn = makeChild(WC_BUTTONW, L"Protokoll speichern", BS_PUSHBUTTON | WS_TABSTOP, 328, 364, 140, 30, IDC_SAVELOG);
 
     EnumChildWindows(
         g.wnd,
@@ -969,6 +1086,12 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_DEVICECHANGE:
+        if ((wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE) && lp &&
+            reinterpret_cast<const DEV_BROADCAST_HDR*>(lp)->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+            const auto* iface = reinterpret_cast<const DEV_BROADCAST_DEVICEINTERFACE_W*>(lp);
+            auditLine(std::string(wp == DBT_DEVICEARRIVAL ? "Gerät angeschlossen: " : "Gerät entfernt: ") +
+                      toUtf8(iface->dbcc_name));
+        }
         if (wp == DBT_DEVICEARRIVAL || wp == DBT_DEVICEREMOVECOMPLETE || wp == DBT_DEVNODES_CHANGED)
             SetTimer(wnd, IDT_REFRESH, kRefreshDebounceMs, nullptr);  // Neustart = Entprellung
         return TRUE;
@@ -1023,6 +1146,10 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
         case IDC_RESUME:
             resumeOperation();
             return 0;
+        case IDC_SAVELOG:
+            saveLog();
+            flushPendingRefresh();
+            return 0;
         }
         break;
     case WM_APP_PROGRESS:
@@ -1056,6 +1183,7 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
                         g.audit.line("Programm beendet");
                         discardPending();
                     }
+                    offerSaveLog(false);
                     DestroyWindow(wnd);
                     return 0;
                 }
@@ -1083,11 +1211,16 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             g.closing = true;
             g.audit.line("Programm beendet");
             discardPending();
+            offerSaveLog(false);
+        } else if (!offerSaveLog(true)) {
+            flushPendingRefresh();
+            return 0;
         }
         DestroyWindow(wnd);
         return 0;
     case WM_DESTROY:
         KillTimer(wnd, IDT_REFRESH);
+        discardLog();
         if (g.devNotify) UnregisterDeviceNotification(g.devNotify);
         g.devNotify = nullptr;
         if (g.taskbar) g.taskbar->Release();
@@ -1133,7 +1266,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
     RegisterClassExW(&wc);
 
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT rc{0, 0, S(480), S(368)};
+    RECT rc{0, 0, S(480), S(406)};
     AdjustWindowRect(&rc, style, FALSE);
     HWND wnd = CreateWindowExW(0, wc.lpszClassName, L"diskwipe " DW_VERSION_WSTR, style, CW_USEDEFAULT, CW_USEDEFAULT,
                                rc.right - rc.left, rc.bottom - rc.top, nullptr, nullptr, inst, nullptr);
