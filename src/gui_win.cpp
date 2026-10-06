@@ -347,7 +347,7 @@ void updatePending() {
             SendMessageW(g.drive, CB_SETCURSEL, static_cast<WPARAM>(hits[0]), 0);
             appendLog(L"Laufwerk des unterbrochenen Vorgangs erkannt: " + toWide(g.driveTexts[hits[0]]));
         }
-        status += L" – Laufwerk erkannt, „Fortsetzen“ klicken";
+        status += L" – Laufwerk wieder erkannt – Fortsetzen klicken";
     } else if (hits.size() > 1) {
         status += L" – mehrere passende Laufwerke, das andere abziehen";
     } else {
@@ -381,7 +381,7 @@ void discardPending() {
     setResult(L"Verworfen – Datenträger unvollständig gelöscht", RGB(200, 110, 0));
     SetWindowTextW(g.status, L"Bereit");
     setRunning(false);
-    finishAudit("Abgebrochen – Datenträger unvollständig gelöscht");
+    finishAudit("Vorgang verworfen – Datenträger unvollständig gelöscht");
 }
 
 // Rückfrage; bei "Ja" wird der unterbrochene Vorgang verworfen und das Protokoll abgeschlossen.
@@ -766,6 +766,7 @@ void resumeOperation() {
         g.audit.line(logText);
         dev.reset();
         updatePending();
+        SetWindowTextW(g.status, text.c_str());
     };
     if (!dev) return refuse(L"Fortsetzen nicht möglich: " + toWide(err), "Fortsetzen nicht möglich: " + err);
     g.audit.line(contentCheckText(check));
@@ -787,6 +788,7 @@ void resumeOperation() {
             appendLog(L"Fortsetzen nicht bestätigt.");
             g.audit.line("Fortsetzen nicht bestätigt");
             updatePending();
+            SetWindowTextW(g.status, L"Fortsetzen nicht bestätigt");
             flushPendingRefresh();
             return;
         }
@@ -1031,6 +1033,11 @@ LRESULT CALLBACK wndProc(HWND wnd, UINT msg, WPARAM wp, LPARAM lp) {
             }
             if (answer == IDYES) {
                 if (!g.running) {  // Vorgang endete, während die Abfrage offen war
+                    if (g.pending.active) {
+                        g.closing = true;
+                        g.audit.line("Programm beendet");
+                        discardPending();
+                    }
                     DestroyWindow(wnd);
                     return 0;
                 }
