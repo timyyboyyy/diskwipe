@@ -108,3 +108,71 @@ TEST(describe_drives_empty_serial_no_suffix) {
     CHECK_EQ(r[0], std::string("Disk 1 – - – VendorCo ProductCode – 14,6 GB – USB"));
     CHECK_EQ(r[1], std::string("Disk 2 – - – VendorCo ProductCode [SN …2222] – 14,6 GB – USB"));
 }
+
+namespace {
+DriveInfo identityStick(int number, const std::string& serial) {
+    DriveInfo d;
+    d.number = number;
+    d.model = "Intenso Rainbow";
+    d.serial = serial;
+    d.size = 15728640000ULL;
+    d.usb = true;
+    d.removable = true;
+    return d;
+}
+}  // namespace
+
+TEST(identity_ignores_disk_number) {
+    const std::vector<DriveInfo> list = {identityStick(4, "AA001234")};
+    const auto hits = findByIdentity(list, identityStick(3, "AA001234"));
+    CHECK_EQ(hits.size(), size_t(1));
+    CHECK_EQ(hits[0], size_t(0));
+}
+
+TEST(identity_distinguishes_twin_sticks_by_serial) {
+    const std::vector<DriveInfo> list = {identityStick(4, "AA001234"), identityStick(5, "AA009999")};
+    const auto hits = findByIdentity(list, identityStick(3, "AA009999"));
+    CHECK_EQ(hits.size(), size_t(1));
+    CHECK_EQ(hits[0], size_t(1));
+}
+
+TEST(identity_with_duplicate_serial_is_ambiguous) {
+    const std::vector<DriveInfo> list = {identityStick(4, "0000"), identityStick(5, "0000")};
+    CHECK_EQ(findByIdentity(list, identityStick(3, "0000")).size(), size_t(2));
+}
+
+TEST(identity_without_serial_never_matches) {
+    const std::vector<DriveInfo> list = {identityStick(4, "")};
+    CHECK(findByIdentity(list, identityStick(3, "")).empty());
+    CHECK(!sameIdentity(identityStick(3, ""), identityStick(3, "")));
+}
+
+TEST(identity_requires_same_model_size_and_bus) {
+    DriveInfo other = identityStick(4, "AA001234");
+    other.size += 512;
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
+    other.model = "Andere";
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
+    other.usb = false;
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+    other = identityStick(4, "AA001234");
+    other.removable = false;
+    CHECK(!sameIdentity(other, identityStick(3, "AA001234")));
+}
+
+TEST(identity_never_matches_system_disk) {
+    DriveInfo sys = identityStick(0, "AA001234");
+    sys.system = true;
+    CHECK(findByIdentity({sys}, identityStick(3, "AA001234")).empty());
+}
+
+TEST(drive_kind_names) {
+    DriveInfo d = identityStick(1, "x");
+    CHECK_EQ(std::string(driveKind(d)), std::string("USB"));
+    d.usb = false;
+    CHECK_EQ(std::string(driveKind(d)), std::string("Wechseldatenträger"));
+    d.removable = false;
+    CHECK_EQ(std::string(driveKind(d)), std::string("Intern"));
+}

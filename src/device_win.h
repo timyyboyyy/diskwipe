@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -15,7 +16,9 @@ namespace dw {
 // Prüft vor dem Sperren, dass das Laufwerk noch dem ausgewählten (expected) entspricht.
 class WinPhysicalDevice : public BlockDevice {
 public:
-    static std::unique_ptr<WinPhysicalDevice> open(const DriveInfo& expected, std::string& err);
+    // log (optional) erhält Protokollzeilen: Partitionstabelle, Sperren/Aushängen je Volume, Geometrie.
+    static std::unique_ptr<WinPhysicalDevice> open(const DriveInfo& expected, std::string& err,
+                                                   const std::function<void(const std::string&)>& log = nullptr);
     ~WinPhysicalDevice() override;
     WinPhysicalDevice(const WinPhysicalDevice&) = delete;
     WinPhysicalDevice& operator=(const WinPhysicalDevice&) = delete;

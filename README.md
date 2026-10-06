@@ -7,6 +7,8 @@ Minimalistisches Windows-Tool zum vollständigen, verifizierten Überschreiben v
 - **Prüfen**-Funktion: bestätigt für jeden Datenträger, dass jedes Byte `0x00` ist
 - Die Laufwerksliste zeigt je Eintrag `Disk 3 – E: (MEINSTICK), F: – Modell – 14,6 GB – USB`; vor dem Löschen nennt der Bestätigungsdialog alle Partitionen des Laufwerks
 - Die Laufwerksliste aktualisiert sich beim Ein- und Abstecken automatisch; der Gesamtfortschritt steht im Balken und auf dem Taskleisten-Symbol
+- Wird der Stick während des Löschens abgezogen, kann der Vorgang nach dem Wiedereinstecken mit **Fortsetzen** an der unterbrochenen Stelle weiterlaufen (solange diskwipe geöffnet bleibt). Der Stick wird über Seriennummer und Inhalt wiedererkannt; ein anderer Stick wird nicht beschrieben
+- Jeder Lauf schreibt ein ausführliches Protokoll mit Zeitstempeln (System, Laufwerk, Partitionstabelle, Fortschritt, Checkpoints, Durchgänge mit Dauer und MB/s, Unterbrechungen, Fehlercodes, Ergebnis); über **Protokoll speichern** wird es abgelegt
 - Schutz: standardmäßig nur USB-/Wechseldatenträger, die Systemplatte (inkl. Boot-/EFI-Platte) nie, Bestätigung durch Eintippen von `LÖSCHEN`
 
 ## Installation

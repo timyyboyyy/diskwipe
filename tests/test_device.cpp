@@ -66,3 +66,28 @@ TEST(memory_device_fake_capacity_wraps) {
     CHECK(m.read(0, r.data(), 512));
     CHECK(r == w);
 }
+
+TEST(memory_device_counts_and_fails_flushes) {
+    MemoryDevice m(4096);
+    m.failFlushNumber = 2;
+    CHECK(m.flush());
+    CHECK(!m.flush());
+    CHECK(m.lastError().find("simulierter Flush-Fehler") != std::string::npos);
+    CHECK(m.flush());
+    CHECK_EQ(m.flushCount, 3);
+}
+
+TEST(memory_device_loses_unflushed_writes_on_fault) {
+    MemoryDevice m(4096);
+    m.loseUnflushedOnFault = true;
+    const uint8_t a[512] = {1};
+    const uint8_t b[512] = {2};
+    CHECK(m.write(0, a, 512));
+    CHECK(m.flush());
+    CHECK(m.write(512, b, 512));
+    CHECK_EQ(int(m.data()[512]), 2);
+    m.failWriteAt = 1024;
+    CHECK(!m.write(1024, b, 512));
+    CHECK_EQ(int(m.data()[0]), 1);      // geflusht: bleibt
+    CHECK_EQ(int(m.data()[512]), 0x5A); // nicht geflusht: verloren
+}

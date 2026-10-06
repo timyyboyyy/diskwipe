@@ -2,6 +2,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,34 @@ struct Progress {
 
 using ProgressFn = std::function<void(const Progress&)>;
 
+// Nach so vielen Blöcken wird in der Schreibphase geflusht; erst dann gilt der Offset als Checkpoint.
+constexpr uint64_t kCheckpointBlocks = 64;
+
+// Stelle, an der ein unterbrochener Löschvorgang weitergeht.
+struct ResumePoint {
+    int pass = 1;                 // 1-basiert
+    Phase phase = Phase::Write;
+    uint64_t offset = 0;          // blockausgerichtet; Write: letzter Checkpoint
+    uint64_t writtenEnd = 0;      // Write: exklusives Ende aller in diesem Durchgang versuchten Schreibzugriffe
+    uint64_t mismatches = 0;      // Verify: bisher gezählte Abweichungen
+    uint64_t firstMismatch = 0;
+    std::vector<uint8_t> excerpt;
+};
+
+enum class EventKind { PhaseStarted, Checkpoint, PhaseCompleted };
+
+struct Event {
+    EventKind kind;
+    int pass;             // 1-basiert
+    int totalPasses;
+    Phase phase;
+    PatternKind pattern;
+    uint64_t offset;      // PhaseStarted: Start-Offset; Checkpoint: geflushter Offset; PhaseCompleted: Größe
+    uint64_t mismatches;  // PhaseCompleted in der Prüfphase
+};
+
+using EventFn = std::function<void(const Event&)>;
+
 enum class Status { Success, Cancelled, IoError, VerifyMismatch };
 
 struct Result {
@@ -34,11 +63,18 @@ struct Result {
     uint64_t mismatchCount = 0;
     std::vector<uint8_t> excerpt;  // bis zu 32 tatsächlich gelesene Bytes ab firstMismatch
     std::string message;
+    std::optional<ResumePoint> resume;  // nur bei IoError aus runPasses: hier kann fortgesetzt werden
 };
 
 struct PassSpec {
     PatternKind kind;
     uint64_t seed;
+};
+
+struct RunOptions {
+    ResumePoint start;                            // Standard: Durchgang 1, Schreiben, Offset 0
+    EventFn events;                               // optional
+    uint64_t checkpointBlocks = kCheckpointBlocks;
 };
 
 // randomPasses Zufallsdurchgänge mit je eigenem Seed, danach immer ein Nulldurchgang.
@@ -48,10 +84,25 @@ std::vector<PassSpec> makePlan(int randomPasses, const std::function<uint64_t()>
 Result runPasses(BlockDevice& dev, const std::vector<PassSpec>& plan, const ProgressFn& progress,
                  const std::atomic<bool>& cancel);
 
+// Wie oben, aber ab opts.start und mit Ereignissen. Bei IoError ist Result::resume gesetzt.
+Result runPasses(BlockDevice& dev, const std::vector<PassSpec>& plan, const RunOptions& opts, const ProgressFn& progress,
+                 const std::atomic<bool>& cancel);
+
 // makePlan mit secureRandomSeed + runPasses.
 Result runWipe(BlockDevice& dev, int randomPasses, const ProgressFn& progress, const std::atomic<bool>& cancel);
 
-// Nur lesen: prüft, dass jedes Byte 0x00 ist.
-Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::atomic<bool>& cancel);
+// Nur lesen: prüft, dass jedes Byte 0x00 ist. Nicht fortsetzbar.
+Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::atomic<bool>& cancel,
+                     const EventFn& events = nullptr);
+
+enum class ContentCheck {
+    Strong,    // Zufallsmuster des Vorgangs gefunden: sicher derselbe Datenträger
+    Weak,      // nichts Widersprüchliches, aber kein Zufallsmuster prüfbar
+    Mismatch,  // Inhalt passt nicht zum unterbrochenen Vorgang
+    ReadError, // err ist gesetzt
+};
+
+// Prüft vor dem ersten Schreibzugriff, ob dev zum unterbrochenen Vorgang passt. Liest höchstens zwei Blöcke.
+ContentCheck checkResumeContent(BlockDevice& dev, const std::vector<PassSpec>& plan, const ResumePoint& at, std::string& err);
 
 }  // namespace dw
