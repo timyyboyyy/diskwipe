@@ -336,3 +336,19 @@ TEST(content_check_read_error) {
     CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::ReadError);
     CHECK(err.find("simulierter Lesefehler") != std::string::npos);
 }
+
+TEST(checkpoint_events_follow_each_checkpoint_flush) {
+    MemoryDevice m(5 * kBlockSize);
+    std::atomic<bool> cancel{false};
+    std::vector<Event> checkpoints;
+    const Result r = runPasses(m, {{PatternKind::Zero, 0}}, every2Blocks(ResumePoint{}, [&](const Event& e) {
+                                   if (e.kind == EventKind::Checkpoint) checkpoints.push_back(e);
+                               }),
+                               nullptr, cancel);
+    CHECK(r.status == Status::Success);
+    CHECK_EQ(checkpoints.size(), size_t(2));  // nach Block 1 und 3; das Phasenende meldet PhaseCompleted
+    CHECK_EQ(checkpoints[0].offset, uint64_t(2 * kBlockSize));
+    CHECK_EQ(checkpoints[1].offset, uint64_t(4 * kBlockSize));
+    CHECK_EQ(checkpoints[0].pass, 1);
+    CHECK(checkpoints[0].phase == Phase::Write);
+}

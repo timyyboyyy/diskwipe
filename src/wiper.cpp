@@ -115,6 +115,7 @@ Result runPlan(BlockDevice& dev, const std::vector<PassSpec>& plan, bool doWrite
                 if ((block + 1) % checkpointBlocks == 0 && off + n < total) {
                     if (!dev.flush()) return writeFail(off + n, "Flush fehlgeschlagen: " + dev.lastError());
                     checkpoint = off + n;
+                    emit(EventKind::Checkpoint, pass, Phase::Write, checkpoint, 0);
                 }
             }
             if (!dev.flush()) return writeFail(total, "Flush fehlgeschlagen: " + dev.lastError());

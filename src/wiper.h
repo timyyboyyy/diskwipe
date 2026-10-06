@@ -37,7 +37,7 @@ struct ResumePoint {
     std::vector<uint8_t> excerpt;
 };
 
-enum class EventKind { PhaseStarted, PhaseCompleted };
+enum class EventKind { PhaseStarted, Checkpoint, PhaseCompleted };
 
 struct Event {
     EventKind kind;
@@ -45,7 +45,7 @@ struct Event {
     int totalPasses;
     Phase phase;
     PatternKind pattern;
-    uint64_t offset;      // PhaseStarted: Start-Offset; PhaseCompleted: Größe
+    uint64_t offset;      // PhaseStarted: Start-Offset; Checkpoint: geflushter Offset; PhaseCompleted: Größe
     uint64_t mismatches;  // PhaseCompleted in der Prüfphase
 };
 

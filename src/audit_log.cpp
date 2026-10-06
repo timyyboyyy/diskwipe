@@ -1,5 +1,7 @@
 #include "audit_log.h"
 
+#include <algorithm>
+
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -74,8 +76,26 @@ std::string suggestLogName(const std::tm& t, const DriveInfo& d) {
     return name + ".log";
 }
 
+std::string formatSeconds(double seconds) {
+    const long long s = seconds > 0 ? static_cast<long long>(seconds + 0.5) : 0;
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", s / 3600, (s / 60) % 60, s % 60);
+    return buf;
+}
+
+std::string formatRate(double bytesPerSecond) {
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), "%.1f MB/s", bytesPerSecond > 0 ? bytesPerSecond / 1e6 : 0.0);
+    std::string s(buf);
+    const size_t dot = s.find('.');
+    if (dot != std::string::npos) s[dot] = ',';
+    return s;
+}
+
 std::string eventText(const Event& e) {
     const std::string pass = passLabel(e.pass, e.totalPasses);
+    if (e.kind == EventKind::Checkpoint)
+        return "Checkpoint " + pass + ": bis Offset " + groupDigits(e.offset) + " geschrieben und geflusht";
     if (e.kind == EventKind::PhaseStarted)
         return "Start " + pass + " (" + (e.pattern == PatternKind::Random ? "Zufall" : "Nullen") + "), " + phaseName(e.phase) +
                " ab Offset " + groupDigits(e.offset);
@@ -135,7 +155,42 @@ bool AuditLog::open(const std::string& utf8Path) {
     file_ = openUtf8(utf8Path);
     path_ = file_ ? utf8Path : std::string();
     failed_ = false;
+    lines_ = 0;
     return file_ != nullptr;
+}
+
+std::vector<std::string> RunLogger::onEvent(const Event& e, double now) {
+    if (e.kind == EventKind::PhaseStarted) {
+        phaseStart_ = lastLineTime_ = now;
+        startOffset_ = lastLineDone_ = e.offset;
+        lastStep_ = 0;
+        return {eventText(e)};
+    }
+    if (e.kind == EventKind::Checkpoint) return {eventText(e)};
+    const uint64_t bytes = e.offset > startOffset_ ? e.offset - startOffset_ : 0;
+    const double seconds = now - phaseStart_;
+    std::string text = "Ende " + passLabel(e.pass, e.totalPasses) + ", " + phaseName(e.phase) + ": " + groupDigits(bytes) +
+                       " Bytes in " + formatSeconds(seconds) + ", Ø " + formatRate(seconds > 0 ? bytes / seconds : 0);
+    if (e.phase == Phase::Verify) text += ", " + std::to_string(e.mismatches) + " Abweichungen";
+    return {text};
+}
+
+std::string RunLogger::onProgress(const Progress& p, double now) {
+    if (p.total == 0 || p.done >= p.total) return {};
+    const uint64_t step = p.done * 20 / p.total;  // 5-%-Schritte
+    if (step <= lastStep_ && now - lastLineTime_ < 60.0) return {};
+    const double sinceLast = now - lastLineTime_;
+    const double sinceStart = now - phaseStart_;
+    const double current = sinceLast > 0 ? (p.done - lastLineDone_) / sinceLast : 0;
+    const double average = sinceStart > 0 ? (p.done - startOffset_) / sinceStart : 0;
+    std::string text = "Fortschritt " + passLabel(p.pass, p.totalPasses) + ", " + phaseName(p.phase) + ": " +
+                       std::to_string(p.done * 100 / p.total) + " % (Offset " + groupDigits(p.done) + " von " +
+                       groupDigits(p.total) + "), aktuell " + formatRate(current) + ", Ø " + formatRate(average);
+    if (average > 0) text += ", Rest der Phase ca. " + formatSeconds((p.total - p.done) / average);
+    lastStep_ = std::max(lastStep_, step);
+    lastLineTime_ = now;
+    lastLineDone_ = p.done;
+    return text;
 }
 
 bool AuditLog::isOpen() const {
@@ -148,13 +203,19 @@ bool AuditLog::line(const std::string& text) {
     if (!file_) return false;
     const std::string l = formatLogLine(localNow(), text);
     const bool ok = std::fwrite(l.data(), 1, l.size(), file_) == l.size() && syncToDisk(file_);
-    if (!ok) failed_ = true;
+    if (ok) ++lines_;
+    else failed_ = true;
     return ok;
 }
 
 bool AuditLog::failed() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return failed_;
+}
+
+size_t AuditLog::lines() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lines_;
 }
 
 void AuditLog::close() {

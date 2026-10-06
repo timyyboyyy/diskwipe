@@ -176,3 +176,61 @@ TEST(audit_log_open_failure_is_reported) {
     CHECK(!log.isOpen());
     CHECK(!log.line("x"));
 }
+
+TEST(format_seconds_and_rate) {
+    CHECK_EQ(formatSeconds(0), std::string("0:00:00"));
+    CHECK_EQ(formatSeconds(59.6), std::string("0:01:00"));
+    CHECK_EQ(formatSeconds(3725), std::string("1:02:05"));
+    CHECK_EQ(formatRate(20940000.0), std::string("20,9 MB/s"));
+    CHECK_EQ(formatRate(0), std::string("0,0 MB/s"));
+}
+
+TEST(checkpoint_event_text) {
+    CHECK_EQ(eventText(Event{EventKind::Checkpoint, 2, 4, Phase::Write, PatternKind::Random, 67108864, 0}),
+             std::string("Checkpoint Durchgang 2/4: bis Offset 67.108.864 geschrieben und geflusht"));
+}
+
+TEST(run_logger_phase_summary) {
+    RunLogger log;
+    const Event start{EventKind::PhaseStarted, 1, 2, Phase::Write, PatternKind::Random, 0, 0};
+    auto lines = log.onEvent(start, 10.0);
+    CHECK_EQ(lines.size(), size_t(1));
+    CHECK_EQ(lines[0], eventText(start));
+    lines = log.onEvent(Event{EventKind::PhaseCompleted, 1, 2, Phase::Write, PatternKind::Random, 100000000, 0}, 15.0);
+    CHECK_EQ(lines.size(), size_t(1));
+    CHECK_EQ(lines[0], std::string("Ende Durchgang 1/2, Schreiben: 100.000.000 Bytes in 0:00:05, Ø 20,0 MB/s"));
+
+    // Fortgesetzte Prüfphase: nur der Rest ab dem Start-Offset zählt.
+    log.onEvent(Event{EventKind::PhaseStarted, 1, 2, Phase::Verify, PatternKind::Random, 40000000, 0}, 20.0);
+    lines = log.onEvent(Event{EventKind::PhaseCompleted, 1, 2, Phase::Verify, PatternKind::Random, 100000000, 3}, 23.0);
+    CHECK_EQ(lines[0], std::string("Ende Durchgang 1/2, Prüfen: 60.000.000 Bytes in 0:00:03, Ø 20,0 MB/s, 3 Abweichungen"));
+}
+
+TEST(run_logger_progress_every_5_percent_or_minute) {
+    RunLogger log;
+    log.onEvent(Event{EventKind::PhaseStarted, 1, 1, Phase::Write, PatternKind::Zero, 0, 0}, 0.0);
+    const uint64_t total = 1000000000;
+    CHECK(log.onProgress(Progress{1, 1, Phase::Write, 10000000, total}, 1.0).empty());  // 1 %
+    CHECK_EQ(log.onProgress(Progress{1, 1, Phase::Write, 50000000, total}, 2.5),
+             std::string("Fortschritt Durchgang 1/1, Schreiben: 5 % (Offset 50.000.000 von 1.000.000.000), "
+                         "aktuell 20,0 MB/s, Ø 20,0 MB/s, Rest der Phase ca. 0:00:48"));
+    CHECK(log.onProgress(Progress{1, 1, Phase::Write, 60000000, total}, 30.0).empty());   // 6 %, < 60 s
+    CHECK(!log.onProgress(Progress{1, 1, Phase::Write, 70000000, total}, 63.0).empty());  // 60 s vergangen
+    CHECK(log.onProgress(Progress{1, 1, Phase::Write, total, total}, 70.0).empty());      // Ende: PhaseCompleted
+}
+
+TEST(audit_log_counts_lines) {
+    const std::string path = tmpPath("audit_lines.log");
+    AuditLog log;
+    CHECK_EQ(log.lines(), size_t(0));
+    CHECK(log.open(path));
+    CHECK(log.line("a"));
+    CHECK(log.line("b"));
+    CHECK_EQ(log.lines(), size_t(2));
+    log.close();
+    CHECK(!log.line("c"));
+    CHECK_EQ(log.lines(), size_t(2));  // bleibt nach close für den Vergleich "gespeichert?"
+    CHECK(log.open(path));
+    CHECK_EQ(log.lines(), size_t(0));
+    log.close();
+}
