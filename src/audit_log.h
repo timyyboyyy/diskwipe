@@ -39,12 +39,14 @@ public:
     bool isOpen() const;
     const std::string& path() const { return path_; }
     bool line(const std::string& text);  // thread-sicher; false wenn nicht offen oder Schreibfehler
+    bool failed() const;                 // sticky: ein Schreib-/Sync-Fehler seit open()
     void close();
 
 private:
     mutable std::mutex mutex_;
     std::FILE* file_ = nullptr;
     std::string path_;
+    bool failed_ = false;
 };
 
 }  // namespace dw

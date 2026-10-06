@@ -95,7 +95,6 @@ Result runWipe(BlockDevice& dev, int randomPasses, const ProgressFn& progress, c
 Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::atomic<bool>& cancel,
                      const EventFn& events = nullptr);
 
-
 enum class ContentCheck {
     Strong,    // Zufallsmuster des Vorgangs gefunden: sicher derselbe Datenträger
     Weak,      // nichts Widersprüchliches, aber kein Zufallsmuster prüfbar

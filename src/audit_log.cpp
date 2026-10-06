@@ -86,8 +86,11 @@ std::string eventText(const Event& e) {
 
 std::string interruptionText(const Result& r, int totalPasses) {
     const ResumePoint p = r.resume ? *r.resume : ResumePoint{};
-    return "Unterbrechung in " + passLabel(p.pass, totalPasses) + " (" + phaseName(p.phase) + "): " + r.message + "; weiter ab " +
-           (p.phase == Phase::Write ? "Checkpoint " : "Offset ") + groupDigits(p.offset);
+    std::string text = "Unterbrechung in " + passLabel(p.pass, totalPasses) + " (" + phaseName(p.phase) + "): " + r.message +
+                       "; weiter ab " + (p.phase == Phase::Write ? "Checkpoint " : "Offset ") + groupDigits(p.offset);
+    if (p.phase == Phase::Verify && p.mismatches > 0)
+        text += "; bisher " + std::to_string(p.mismatches) + " abweichende Bytes, erste bei Offset " + groupDigits(p.firstMismatch);
+    return text;
 }
 
 std::string resumedText(const ResumePoint& p, int totalPasses) {
@@ -131,6 +134,7 @@ bool AuditLog::open(const std::string& utf8Path) {
     if (file_) std::fclose(file_);
     file_ = openUtf8(utf8Path);
     path_ = file_ ? utf8Path : std::string();
+    failed_ = false;
     return file_ != nullptr;
 }
 
@@ -143,7 +147,14 @@ bool AuditLog::line(const std::string& text) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!file_) return false;
     const std::string l = formatLogLine(localNow(), text);
-    return std::fwrite(l.data(), 1, l.size(), file_) == l.size() && syncToDisk(file_);
+    const bool ok = std::fwrite(l.data(), 1, l.size(), file_) == l.size() && syncToDisk(file_);
+    if (!ok) failed_ = true;
+    return ok;
+}
+
+bool AuditLog::failed() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return failed_;
 }
 
 void AuditLog::close() {

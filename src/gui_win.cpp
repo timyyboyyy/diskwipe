@@ -97,6 +97,7 @@ struct App {
     DriveInfo runDrive;             // Laufwerk des laufenden Vorgangs
     double startUnits = 0;          // Fortschritt beim Start (für MB/s nach dem Fortsetzen)
     PendingResume pending;
+    int interruptions = 0;          // Unterbrechungen des aktuellen Vorgangs (für die Ergebniszeile)
 };
 App g;
 
@@ -158,10 +159,14 @@ void startAudit(bool wipe, const DriveInfo& drive, int randomPasses) {
     const std::tm t = localNow();
     wchar_t dir[MAX_PATH + 1] = {};
     const DWORD len = GetTempPathW(MAX_PATH + 1, dir);
+    if (len == 0 || len > MAX_PATH) {
+        appendLog(L"Warnung: Temp-Ordner nicht ermittelbar – kein Protokoll.");
+        return;
+    }
     wchar_t name[64];
     swprintf(name, 64, L"diskwipe-%04d%02d%02d-%02d%02d%02d-%d.log", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
              t.tm_min, t.tm_sec, ++counter);
-    const std::wstring path = (len > 0 && len <= MAX_PATH ? std::wstring(dir, len) : std::wstring()) + name;
+    const std::wstring path = std::wstring(dir, len) + name;
     g.logName = suggestLogName(t, drive);
     if (!g.audit.open(toUtf8(path))) {
         appendLog(L"Warnung: Protokolldatei kann nicht angelegt werden: " + path);
@@ -177,6 +182,7 @@ void startAudit(bool wipe, const DriveInfo& drive, int randomPasses) {
 void finishAudit(const std::string& outcome) {
     if (!g.audit.isOpen()) return;
     g.audit.line("Ergebnis: " + outcome);
+    if (g.audit.failed()) appendLog(L"Warnung: Protokoll unvollständig – nicht alle Zeilen konnten geschrieben werden.");
     g.audit.close();
     const std::wstring temp = toWide(g.audit.path());
 
@@ -363,6 +369,7 @@ void enterPending(const Result& r) {
     g.pending.plan = g.plan;
     g.pending.point = *r.resume;
     g.pending.total = r.bytesTotal;
+    ++g.interruptions;
     g.audit.line(interruptionText(r, static_cast<int>(g.plan.size())));
     setTaskbarProgress(TBPF_PAUSED, g.taskbarDone);
     const std::wstring text = L"Unterbrochen: " + toWide(r.message);
@@ -735,6 +742,7 @@ void startOperation(bool wipe) {
     }
     appendLog((wipe ? L"Löschen gestartet: " : L"Prüfung gestartet: ") + toWide(driveText) +
               (wipe ? L" (" + std::to_wstring(randomPasses) + L"× Zufall + 1× Nullen)" : L""));
+    g.interruptions = 0;
     startAudit(wipe, drive, randomPasses);
     launchWorker(drive, nullptr, wipe, ResumePoint{}, 0);
 }
@@ -809,7 +817,8 @@ void onDone(Result* raw) {
     setRunning(false);
     SetWindowTextW(g.status, L"Bereit");
 
-    const bool resumable = g.wipeMode && r->status == Status::IoError && r->resume && !g.closing;
+    const bool verifyMismatched = r->resume && r->resume->phase == Phase::Verify && r->resume->mismatches > 0;
+    const bool resumable = g.wipeMode && r->status == Status::IoError && r->resume && !verifyMismatched && !g.closing;
     if (resumable && !g.runDrive.serial.empty()) {
         enterPending(*r);
     } else {
@@ -825,6 +834,8 @@ void onDone(Result* raw) {
             setTaskbarProgress(TBPF_NOPROGRESS);
             outcome = L"Erfolg: alle " + std::to_wstring(r->bytesTotal) + L" Bytes = 0x00";
             if (g.wipeMode) outcome += L" (" + std::to_wstring(r->passesCompleted) + L" Durchgänge geschrieben und verifiziert)";
+            if (g.wipeMode && g.interruptions > 0)
+                outcome += L", " + std::to_wstring(g.interruptions) + (g.interruptions == 1 ? L" Unterbrechung" : L" Unterbrechungen");
             setResult(outcome, RGB(0, 128, 0));
             appendLog(outcome);
             if (g.wipeMode && !g.closing) {
@@ -845,7 +856,14 @@ void onDone(Result* raw) {
             break;
         }
         case Status::IoError: {
-            outcome = L"Fehler: " + toWide(r->message);
+            if (g.wipeMode && verifyMismatched) {
+                const ResumePoint& p = *r->resume;
+                outcome = L"Prüfung fehlgeschlagen in Durchgang " + std::to_wstring(p.pass) + L": " + std::to_wstring(p.mismatches) +
+                          L" abweichende Bytes, erste bei Offset " + std::to_wstring(p.firstMismatch) +
+                          L" (Prüfung durch Lesefehler unterbrochen: " + toWide(r->message) + L")";
+            } else {
+                outcome = L"Fehler: " + toWide(r->message);
+            }
             setTaskbarProgress(TBPF_ERROR);
             setResult(outcome, RGB(190, 0, 0));
             appendLog(outcome);

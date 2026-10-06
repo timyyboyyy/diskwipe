@@ -118,6 +118,20 @@ TEST(interruption_and_resume_texts) {
     CHECK_EQ(interruptionText(r, 4),
              std::string("Unterbrechung in Durchgang 2/4 (Prüfen): Schreibfehler bei Offset 6012534784: "
                          "Das Gerät ist nicht bereit.; weiter ab Offset 5.972.688.896"));
+    p.mismatches = 7;
+    p.firstMismatch = 1048576;
+    r.resume = p;
+    CHECK_EQ(interruptionText(r, 4),
+             std::string("Unterbrechung in Durchgang 2/4 (Prüfen): Schreibfehler bei Offset 6012534784: "
+                         "Das Gerät ist nicht bereit.; weiter ab Offset 5.972.688.896; "
+                         "bisher 7 abweichende Bytes, erste bei Offset 1.048.576"));
+}
+
+TEST(audit_failed_flag) {
+    AuditLog log;
+    CHECK(!log.failed());
+    CHECK(!log.line("closed"));  // nicht offen ist kein Schreibfehler
+    CHECK(!log.failed());
 }
 
 TEST(content_check_texts) {

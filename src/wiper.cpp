@@ -212,8 +212,6 @@ Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::at
     return r;
 }
 
-
-
 ContentCheck checkResumeContent(BlockDevice& dev, const std::vector<PassSpec>& plan, const ResumePoint& at, std::string& err) {
     const uint64_t total = dev.size();
     if (total == 0 || at.pass < 1 || at.pass > static_cast<int>(plan.size())) {
