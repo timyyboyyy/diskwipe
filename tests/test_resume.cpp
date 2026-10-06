@@ -232,3 +232,107 @@ TEST(cancel_and_mismatch_are_not_resumable) {
     CHECK(v.status == Status::VerifyMismatch);
     CHECK(!v.resume.has_value());
 }
+
+
+namespace {
+
+// Lauf in Durchgang 2 bei Block 5 unterbrechen (7,5 Blöcke groß, Checkpoint alle 2 Blöcke).
+ResumePoint interruptPass2(MemoryDevice& m) {
+    std::atomic<bool> cancel{false};
+    const Result r = runPasses(m, twoRandomPlusZero(), every2Blocks(ResumePoint{}, armWriteFaultInPass(m, 2, 5 * kBlockSize + 10)),
+                               nullptr, cancel);
+    if (!r.resume) throw TestFailure("Unterbrechung erwartet");
+    m.failWriteAt = MemoryDevice::kNoFault;
+    return *r.resume;
+}
+
+}  // namespace
+
+TEST(content_check_same_device_is_strong) {
+    MemoryDevice m(7 * kBlockSize + 512);
+    const ResumePoint at = interruptPass2(m);
+    std::string err;
+    CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::Strong);
+}
+
+TEST(content_check_foreign_device_is_mismatch) {
+    MemoryDevice m(7 * kBlockSize + 512);
+    const ResumePoint at = interruptPass2(m);
+    MemoryDevice foreign(7 * kBlockSize + 512);  // gleiche Größe, Fremdinhalt 0x5A
+    std::string err;
+    CHECK(checkResumeContent(foreign, twoRandomPlusZero(), at, err) == ContentCheck::Mismatch);
+}
+
+TEST(content_check_nothing_written_yet_is_weak) {
+    MemoryDevice m(4 * kBlockSize);
+    ResumePoint at;  // Durchgang 1, Checkpoint 0
+    at.writtenEnd = kBlockSize;
+    std::string err;
+    CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::Weak);
+}
+
+TEST(content_check_zero_pass_with_overwritten_last_block_is_weak) {
+    MemoryDevice m(4 * kBlockSize);
+    std::atomic<bool> cancel{false};
+    CHECK(runPasses(m, twoRandomPlusZero(), nullptr, cancel).status == Status::Success);
+    ResumePoint at;
+    at.pass = 3;
+    at.offset = 2 * kBlockSize;
+    at.writtenEnd = 4 * kBlockSize;
+    std::string err;
+    CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::Weak);
+}
+
+TEST(content_check_zero_pass_before_last_block_is_strong) {
+    MemoryDevice m(6 * kBlockSize);
+    std::atomic<bool> cancel{false};
+    const std::vector<PassSpec> plan = {{PatternKind::Random, 7}, {PatternKind::Zero, 0}};
+    const Result r = runPasses(m, plan, every2Blocks(ResumePoint{}, armWriteFaultInPass(m, 2, 3 * kBlockSize)), nullptr, cancel);
+    CHECK(r.resume.has_value());
+    CHECK_EQ(r.resume->offset, uint64_t(2 * kBlockSize));
+    std::string err;
+    CHECK(checkResumeContent(m, plan, *r.resume, err) == ContentCheck::Strong);
+    MemoryDevice zeroed(6 * kBlockSize);
+    std::fill(zeroed.data().begin(), zeroed.data().end(), 0);
+    CHECK(checkResumeContent(zeroed, plan, *r.resume, err) == ContentCheck::Mismatch);
+}
+
+TEST(content_check_verify_phase) {
+    MemoryDevice m(4 * kBlockSize);
+    std::atomic<bool> cancel{false};
+    const std::vector<PassSpec> plan = {{PatternKind::Random, 9}, {PatternKind::Zero, 0}};
+    CHECK(runPasses(m, {plan[0]}, nullptr, cancel).status == Status::Success);  // Durchgang 1 komplett
+    ResumePoint at;
+    at.pass = 1;
+    at.phase = Phase::Verify;
+    at.offset = 2 * kBlockSize;
+    std::string err;
+    CHECK(checkResumeContent(m, plan, at, err) == ContentCheck::Strong);
+    MemoryDevice foreign(4 * kBlockSize);
+    CHECK(checkResumeContent(foreign, plan, at, err) == ContentCheck::Mismatch);
+    MemoryDevice zeroed(4 * kBlockSize);
+    std::fill(zeroed.data().begin(), zeroed.data().end(), 0);
+    at.pass = 2;  // Nulldurchgang prüfen: nur schwacher Nachweis
+    CHECK(checkResumeContent(zeroed, plan, at, err) == ContentCheck::Weak);
+}
+
+TEST(content_check_single_block_device_is_weak) {
+    MemoryDevice m(kBlockSize / 2);
+    std::atomic<bool> cancel{false};
+    CHECK(runPasses(m, twoRandomPlusZero(), nullptr, cancel).status == Status::Success);
+    ResumePoint at;
+    at.pass = 2;
+    at.offset = 0;
+    at.writtenEnd = kBlockSize / 2;  // der einzige Block wurde in Durchgang 2 schon angefasst
+    std::string err;
+    CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::Weak);
+}
+
+TEST(content_check_read_error) {
+    MemoryDevice m(7 * kBlockSize + 512);
+    const ResumePoint at = interruptPass2(m);
+    m.failReadAt = 0;
+    std::string err;
+    CHECK(checkResumeContent(m, twoRandomPlusZero(), at, err) == ContentCheck::ReadError);
+    CHECK(err.find("simulierter Lesefehler") != std::string::npos);
+}

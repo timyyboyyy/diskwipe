@@ -95,4 +95,15 @@ Result runWipe(BlockDevice& dev, int randomPasses, const ProgressFn& progress, c
 Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::atomic<bool>& cancel,
                      const EventFn& events = nullptr);
 
+
+enum class ContentCheck {
+    Strong,    // Zufallsmuster des Vorgangs gefunden: sicher derselbe Datenträger
+    Weak,      // nichts Widersprüchliches, aber kein Zufallsmuster prüfbar
+    Mismatch,  // Inhalt passt nicht zum unterbrochenen Vorgang
+    ReadError, // err ist gesetzt
+};
+
+// Prüft vor dem ersten Schreibzugriff, ob dev zum unterbrochenen Vorgang passt. Liest höchstens zwei Blöcke.
+ContentCheck checkResumeContent(BlockDevice& dev, const std::vector<PassSpec>& plan, const ResumePoint& at, std::string& err);
+
 }  // namespace dw

@@ -212,4 +212,43 @@ Result runVerifyZero(BlockDevice& dev, const ProgressFn& progress, const std::at
     return r;
 }
 
+
+
+ContentCheck checkResumeContent(BlockDevice& dev, const std::vector<PassSpec>& plan, const ResumePoint& at, std::string& err) {
+    const uint64_t total = dev.size();
+    if (total == 0 || at.pass < 1 || at.pass > static_cast<int>(plan.size())) {
+        err = "Ungültiger Fortsetzungspunkt";
+        return ContentCheck::ReadError;
+    }
+    const uint64_t lastStart = (total - 1) / kBlockSize * kBlockSize;
+    const PassSpec& current = plan[at.pass - 1];
+
+    struct Probe {
+        uint64_t offset;
+        const PassSpec* spec;
+    };
+    std::vector<Probe> probes;
+    if (at.phase == Phase::Verify) {
+        probes.push_back({0, &current});
+        if (lastStart > 0) probes.push_back({lastStart, &current});
+    } else {
+        if (at.offset > 0) probes.push_back({0, &current});
+        if (at.pass > 1 && at.writtenEnd <= lastStart) probes.push_back({lastStart, &plan[at.pass - 2]});
+    }
+
+    AlignedBuffer expected(kBlockSize), actual(kBlockSize);
+    bool strong = false;
+    for (const Probe& p : probes) {
+        const size_t n = static_cast<size_t>(std::min<uint64_t>(kBlockSize, total - p.offset));
+        if (!dev.read(p.offset, actual.get(), n)) {
+            err = "Lesefehler bei Offset " + std::to_string(p.offset) + ": " + dev.lastError();
+            return ContentCheck::ReadError;
+        }
+        fillPattern(expected.get(), n, p.spec->kind, p.spec->seed, p.offset / kBlockSize);
+        if (std::memcmp(expected.get(), actual.get(), n) != 0) return ContentCheck::Mismatch;
+        if (p.spec->kind == PatternKind::Random) strong = true;
+    }
+    return strong ? ContentCheck::Strong : ContentCheck::Weak;
+}
+
 }  // namespace dw
