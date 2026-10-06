@@ -6,8 +6,10 @@
 #include <algorithm>
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <dbt.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <uxtheme.h>
 #include <vssym32.h>
 
@@ -21,6 +23,7 @@
 #include <vector>
 
 #include "device_win.h"
+#include "audit_log.h"
 #include "drive.h"
 #include "enumerate_win.h"
 #include "resource.h"
@@ -78,6 +81,11 @@ struct App {
     ITaskbarList3* taskbar = nullptr;  // erst nach "TaskbarButtonCreated" vorhanden
     TBPFLAG taskbarState = TBPF_NOPROGRESS;
     ULONGLONG taskbarDone = 0;
+    AuditLog audit;                 // Protokoll des laufenden bzw. unterbrochenen Vorgangs
+    std::string logName;            // Vorschlag für "Speichern unter"
+    std::vector<PassSpec> plan;     // Plan des laufenden Löschvorgangs (mit Seeds, nie protokolliert)
+    DriveInfo runDrive;             // Laufwerk des laufenden Vorgangs
+    double startUnits = 0;          // Fortschritt beim Start (für MB/s nach dem Fortsetzen)
 };
 App g;
 
@@ -131,6 +139,69 @@ void setResult(const std::wstring& text, COLORREF color) {
     g.resultColor = color;
     SetWindowTextW(g.result, text.c_str());
     InvalidateRect(g.result, nullptr, TRUE);
+}
+
+void startAudit(bool wipe, const DriveInfo& drive, int randomPasses) {
+    static int counter = 0;
+    g.audit.close();
+    const std::tm t = localNow();
+    wchar_t dir[MAX_PATH + 1] = {};
+    const DWORD len = GetTempPathW(MAX_PATH + 1, dir);
+    wchar_t name[64];
+    swprintf(name, 64, L"diskwipe-%04d%02d%02d-%02d%02d%02d-%d.log", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec, ++counter);
+    const std::wstring path = (len > 0 && len <= MAX_PATH ? std::wstring(dir, len) : std::wstring()) + name;
+    g.logName = suggestLogName(t, drive);
+    if (!g.audit.open(toUtf8(path))) {
+        appendLog(L"Warnung: Protokolldatei kann nicht angelegt werden: " + path);
+        return;
+    }
+    g.audit.line("diskwipe " DW_VERSION_STR " – Protokoll");
+    g.audit.line(wipe ? "Vorgang: Löschen, " + std::to_string(randomPasses) + "× Zufall + 1× Nullen"
+                      : std::string("Vorgang: Prüfen (alle Bytes = 0x00)"));
+    g.audit.line("Laufwerk: " + driveLogText(drive));
+}
+
+// Schließt das Protokoll mit dem Ergebnis ab und bietet "Speichern unter" an.
+void finishAudit(const std::string& outcome) {
+    if (!g.audit.isOpen()) return;
+    g.audit.line("Ergebnis: " + outcome);
+    g.audit.close();
+    const std::wstring temp = toWide(g.audit.path());
+
+    std::wstring docs;
+    PWSTR known = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &known)) && known) docs = known;
+    CoTaskMemFree(known);
+    wchar_t file[MAX_PATH] = {};
+    const std::wstring suggestion = toWide(g.logName);
+    wcsncpy(file, suggestion.c_str(), MAX_PATH - 1);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = g.wnd;
+    ofn.lpstrFilter = L"Protokoll (*.log)\0*.log\0Alle Dateien (*.*)\0*.*\0";
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrInitialDir = docs.empty() ? nullptr : docs.c_str();
+    ofn.lpstrTitle = L"Protokoll speichern";
+    ofn.lpstrDefExt = L"log";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    BOOL chosen;
+    {
+        ModalGuard guard;
+        chosen = GetSaveFileNameW(&ofn);
+    }
+    if (chosen && CopyFileW(temp.c_str(), file, FALSE)) {
+        DeleteFileW(temp.c_str());
+        appendLog(L"Protokoll gespeichert: " + std::wstring(file));
+        return;
+    }
+    if (chosen) {
+        const std::wstring err = toWide(winErrorText(GetLastError()));
+        ModalGuard guard;
+        MessageBoxW(g.wnd, (L"Protokoll konnte nicht gespeichert werden: " + err).c_str(), L"diskwipe", MB_ICONERROR);
+    }
+    appendLog(L"Protokoll liegt unter: " + temp);
 }
 
 void setRunning(bool running) {
@@ -455,13 +526,82 @@ void onProgress() {
     setOverallProgress(static_cast<int>(unitsDone * 1000.0 / unitsTotal));
 
     const double elapsed = std::chrono::duration<double>(Clock::now() - g.started).count();
-    const double speed = elapsed > 0 ? unitsDone / elapsed : 0;
+    const double speed = elapsed > 0 ? (unitsDone - g.startUnits) / elapsed : 0;
     std::wstring text = L"Durchgang " + std::to_wstring(p.pass) + L"/" + std::to_wstring(p.totalPasses) + L" – " +
                         (p.phase == Phase::Write ? L"Schreiben" : L"Prüfen") + L" – " +
                         std::to_wstring(p.done * 100 / p.total) + L" %";
     if (speed > 0)
         text += L" – " + germanDecimal(speed / 1e6) + L" MB/s – Rest ca. " + formatDuration((unitsTotal - unitsDone) / speed);
     SetWindowTextW(g.status, text.c_str());
+}
+
+// Startet den Worker. dev: bereits geöffnetes Gerät (Fortsetzen) oder nullptr (Worker öffnet selbst).
+// Beim Löschen kommt der Plan aus g.plan.
+void launchWorker(const DriveInfo& drive, std::shared_ptr<BlockDevice> dev, bool wipe, const ResumePoint& start,
+                  double startUnits) {
+    if (g.worker.joinable()) g.worker.join();
+    g.wipeMode = wipe;
+    g.runDrive = drive;
+    g.cancel = false;
+    g.started = Clock::now();
+    g.lastPost = Clock::time_point{};
+    g.startUnits = startUnits;
+    setTaskbarProgress(TBPF_NORMAL, 0);
+    const double unitsTotal = double(wipe ? g.plan.size() * 2 : 1) * double(drive.size);
+    setOverallProgress(unitsTotal > 0 ? static_cast<int>(startUnits * 1000.0 / unitsTotal) : 0);
+    setResult(L"", RGB(0, 0, 0));
+    SetWindowTextW(g.status, L"Laufwerk wird geöffnet …");
+    setRunning(true);
+
+    const std::vector<PassSpec> plan = g.plan;
+    g.worker = std::thread([drive, dev, wipe, plan, start]() mutable {
+        std::unique_ptr<Result> result;
+        try {
+            result.reset(new Result());
+            std::string err;
+            std::shared_ptr<BlockDevice> device = std::move(dev);
+            if (!device) device = WinPhysicalDevice::open(drive, err);
+            if (!device) {
+                result->status = Status::IoError;
+                result->message = err;
+            } else {
+                const ProgressFn report = [](const Progress& p) {
+                    {
+                        std::lock_guard<std::mutex> lock(g.progressMutex);
+                        g.lastProgress = p;
+                    }
+                    const Clock::time_point now = Clock::now();
+                    if (p.done == p.total || now - g.lastPost >= std::chrono::milliseconds(100)) {
+                        g.lastPost = now;
+                        PostMessageW(g.wnd, WM_APP_PROGRESS, 0, 0);
+                    }
+                };
+                const EventFn events = [](const Event& e) { g.audit.line(eventText(e)); };
+                RunOptions opts;
+                opts.start = start;
+                opts.events = events;
+                *result = wipe ? runPasses(*device, plan, opts, report, g.cancel)
+                               : runVerifyZero(*device, report, g.cancel, events);
+            }
+            device.reset();  // Volumes freigeben, bevor die GUI die Liste neu aufbaut
+        } catch (const std::exception& e) {
+            if (!result) result.reset(new Result());
+            result->status = Status::IoError;
+            result->message = e.what();
+        } catch (...) {
+            if (!result) result.reset(new Result());
+            result->status = Status::IoError;
+            result->message = "Unbekannter Fehler";
+        }
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            if (PostMessageW(g.wnd, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(result.get()))) {
+                result.release();  // Besitz geht an onDone über
+                break;
+            }
+            Sleep(50);
+        }
+        // Schlägt das Posten dauerhaft fehl, räumt der unique_ptr das Ergebnis auf.
+    });
 }
 
 void startOperation(bool wipe) {
@@ -488,60 +628,22 @@ void startOperation(bool wipe) {
         }
     }
 
-    if (g.worker.joinable()) g.worker.join();
-    g.wipeMode = wipe;
-    g.cancel = false;
-    g.started = Clock::now();
-    g.lastPost = Clock::time_point{};
-    setTaskbarProgress(TBPF_NORMAL, 0);
-    setOverallProgress(0);
-    setResult(L"", RGB(0, 0, 0));
-    SetWindowTextW(g.status, L"Laufwerk wird geöffnet …");
+    if (wipe) {
+        try {
+            g.plan = makePlan(randomPasses, secureRandomSeed);
+        } catch (const std::exception& e) {
+            const std::wstring text = L"Fehler: Zufallsquelle nicht verfügbar: " + toWide(e.what());
+            setResult(text, RGB(190, 0, 0));
+            appendLog(text);
+            return;
+        }
+    } else {
+        g.plan.clear();
+    }
     appendLog((wipe ? L"Löschen gestartet: " : L"Prüfung gestartet: ") + toWide(driveText) +
               (wipe ? L" (" + std::to_wstring(randomPasses) + L"× Zufall + 1× Nullen)" : L""));
-    setRunning(true);
-
-    g.worker = std::thread([drive, wipe, randomPasses] {
-        std::unique_ptr<Result> result;
-        try {
-            result.reset(new Result());
-            std::string err;
-            std::unique_ptr<WinPhysicalDevice> dev = WinPhysicalDevice::open(drive, err);
-            if (!dev) {
-                result->status = Status::IoError;
-                result->message = err;
-            } else {
-                const ProgressFn report = [](const Progress& p) {
-                    {
-                        std::lock_guard<std::mutex> lock(g.progressMutex);
-                        g.lastProgress = p;
-                    }
-                    const Clock::time_point now = Clock::now();
-                    if (p.done == p.total || now - g.lastPost >= std::chrono::milliseconds(100)) {
-                        g.lastPost = now;
-                        PostMessageW(g.wnd, WM_APP_PROGRESS, 0, 0);
-                    }
-                };
-                *result = wipe ? runWipe(*dev, randomPasses, report, g.cancel) : runVerifyZero(*dev, report, g.cancel);
-            }
-        } catch (const std::exception& e) {
-            if (!result) result.reset(new Result());
-            result->status = Status::IoError;
-            result->message = e.what();
-        } catch (...) {
-            if (!result) result.reset(new Result());
-            result->status = Status::IoError;
-            result->message = "Unbekannter Fehler";
-        }
-        for (int attempt = 0; attempt < 20; ++attempt) {
-            if (PostMessageW(g.wnd, WM_APP_DONE, 0, reinterpret_cast<LPARAM>(result.get()))) {
-                result.release();  // Besitz geht an onDone über
-                break;
-            }
-            Sleep(50);
-        }
-        // Schlägt das Posten dauerhaft fehl, räumt der unique_ptr das Ergebnis auf.
-    });
+    startAudit(wipe, drive, randomPasses);
+    launchWorker(drive, nullptr, wipe, ResumePoint{}, 0);
 }
 
 void onDone(Result* raw) {
@@ -550,14 +652,15 @@ void onDone(Result* raw) {
     setRunning(false);
     SetWindowTextW(g.status, L"Bereit");
 
+    std::wstring outcome;
     switch (r->status) {
     case Status::Success: {
         setOverallProgress(1000);
         setTaskbarProgress(TBPF_NOPROGRESS);
-        std::wstring text = L"Erfolg: alle " + std::to_wstring(r->bytesTotal) + L" Bytes = 0x00";
-        if (g.wipeMode) text += L" (" + std::to_wstring(r->passesCompleted) + L" Durchgänge geschrieben und verifiziert)";
-        setResult(text, RGB(0, 128, 0));
-        appendLog(text);
+        outcome = L"Erfolg: alle " + std::to_wstring(r->bytesTotal) + L" Bytes = 0x00";
+        if (g.wipeMode) outcome += L" (" + std::to_wstring(r->passesCompleted) + L" Durchgänge geschrieben und verifiziert)";
+        setResult(outcome, RGB(0, 128, 0));
+        appendLog(outcome);
         if (g.wipeMode && !g.closing) {
             ModalGuard guard;
             MessageBoxW(g.wnd,
@@ -569,31 +672,35 @@ void onDone(Result* raw) {
         break;
     }
     case Status::Cancelled: {
-        const std::wstring text = g.wipeMode ? L"Abgebrochen – Datenträger unvollständig gelöscht" : L"Prüfung abgebrochen";
+        outcome = g.wipeMode ? L"Abgebrochen – Datenträger unvollständig gelöscht" : L"Prüfung abgebrochen";
         setTaskbarProgress(TBPF_PAUSED);
-        setResult(text, RGB(200, 110, 0));
-        appendLog(text);
+        setResult(outcome, RGB(200, 110, 0));
+        appendLog(outcome);
         break;
     }
     case Status::IoError: {
-        const std::wstring text = L"Fehler: " + toWide(r->message);
+        outcome = L"Fehler: " + toWide(r->message);
         setTaskbarProgress(TBPF_ERROR);
-        setResult(text, RGB(190, 0, 0));
-        appendLog(text);
+        setResult(outcome, RGB(190, 0, 0));
+        appendLog(outcome);
         break;
     }
     case Status::VerifyMismatch: {
-        std::wstring text = L"Prüfung fehlgeschlagen";
+        outcome = L"Prüfung fehlgeschlagen";
         setTaskbarProgress(TBPF_ERROR);
-        if (g.wipeMode) text += L" in Durchgang " + std::to_wstring(r->failedPass);
-        text += L": " + std::to_wstring(r->mismatchCount) + L" abweichende Bytes, erste bei Offset " +
-                std::to_wstring(r->firstMismatch);
-        setResult(text, RGB(190, 0, 0));
-        appendLog(text);
-        appendLog(L"Daten ab Offset " + std::to_wstring(r->firstMismatch) + L": " + hexExcerpt(r->excerpt));
+        if (g.wipeMode) outcome += L" in Durchgang " + std::to_wstring(r->failedPass);
+        outcome += L": " + std::to_wstring(r->mismatchCount) + L" abweichende Bytes, erste bei Offset " +
+                   std::to_wstring(r->firstMismatch);
+        setResult(outcome, RGB(190, 0, 0));
+        appendLog(outcome);
+        const std::wstring data = L"Daten ab Offset " + std::to_wstring(r->firstMismatch) + L": " + hexExcerpt(r->excerpt);
+        appendLog(data);
+        g.audit.line(toUtf8(data));
         break;
     }
     }
+    if (g.closing) g.audit.line("Programm beendet");
+    finishAudit(toUtf8(outcome));
 
     if (g.closing) {
         DestroyWindow(g.wnd);
